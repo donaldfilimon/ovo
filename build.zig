@@ -142,6 +142,38 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
 
+    // WASM build for browser: zig build wasm
+    const wasm_target = b.resolveTargetQuery(.{
+        .cpu_arch = .wasm32,
+        .os_tag = .freestanding,
+    });
+    const mod_wasm = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = wasm_target,
+    });
+    const wasm_root = b.createModule(.{
+        .root_source_file = b.path("src/wasm.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+        .imports = &.{
+            .{ .name = "ovo", .module = mod_wasm },
+        },
+    });
+    const wasm_exe = b.addExecutable(.{
+        .name = "ovo",
+        .root_module = wasm_root,
+    });
+    wasm_exe.entry = .disabled;
+    b.installArtifact(wasm_exe);
+    const install_wasm = b.addInstallFile(wasm_exe.getEmittedBin(), "wasm/ovo.wasm");
+    b.getInstallStep().dependOn(&install_wasm.step);
+    const install_html = b.addInstallFile(b.path("wasm/index.html"), "wasm/index.html");
+    b.getInstallStep().dependOn(&install_html.step);
+    const install_js = b.addInstallFile(b.path("wasm/app.js"), "wasm/app.js");
+    b.getInstallStep().dependOn(&install_js.step);
+    const wasm_step = b.step("wasm", "Build WebAssembly and install demo to zig-out/wasm");
+    wasm_step.dependOn(b.getInstallStep());
+
     // Just like flags, top level steps are also listed in the `--help` menu.
     //
     // The Zig build system is entirely implemented in userland, which means

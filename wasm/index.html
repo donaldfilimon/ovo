@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ovo NN – Zig WASM</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 32rem; margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.25rem; }
+    label { display: block; margin-top: 0.75rem; }
+    input { width: 6rem; margin-left: 0.5rem; }
+    button { margin-top: 1rem; padding: 0.5rem 1rem; cursor: pointer; }
+    #out { margin-top: 1rem; font-family: ui-monospace, monospace; }
+    .err { color: #c00; }
+  </style>
+</head>
+<body>
+  <h1>Ovo NN (Zig → WASM)</h1>
+  <p>2→4→1 network, sigmoid. Input two numbers, run forward in the browser.</p>
+  <label>Input 1 <input type="number" id="x1" value="0.5" step="any"></label>
+  <label>Input 2 <input type="number" id="x2" value="-0.3" step="any"></label>
+  <button id="run">Run forward</button>
+  <div id="out"></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

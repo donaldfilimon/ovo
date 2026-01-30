@@ -5,8 +5,11 @@ const Io = std.Io;
 pub const network = @import("network.zig");
 pub const layer = @import("layer.zig");
 pub const activation = @import("activation.zig");
+pub const loss = @import("loss.zig");
 
 pub const Network = network.Network;
+pub const Gradients = network.Gradients;
+pub const trainStepMse = network.trainStepMse;
 
 /// This is a documentation comment to explain the `printAnotherMessage` function below.
 ///
