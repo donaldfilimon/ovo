@@ -10,6 +10,7 @@ pub const loss = @import("loss.zig");
 pub const Network = network.Network;
 pub const Gradients = network.Gradients;
 pub const trainStepMse = network.trainStepMse;
+pub const trainStepMseBatch = network.trainStepMseBatch;
 
 /// This is a documentation comment to explain the `printAnotherMessage` function below.
 ///

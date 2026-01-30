@@ -132,6 +132,130 @@ pub const Network = struct {
         return output;
     }
 
+    /// Forward pass with per-layer activations. act_fns.len must equal num_layers.
+    pub fn forwardWithActivations(
+        self: *const Network,
+        allocator: std.mem.Allocator,
+        input: []const f32,
+        act_fns: []const ActivationFn,
+    ) ![]f32 {
+        if (input.len != self.layer_sizes[0]) return error.InputSizeMismatch;
+        const num_layers = self.layer_sizes.len - 1;
+        if (act_fns.len != num_layers) return error.ActivationCountMismatch;
+        const output_size = self.layer_sizes[self.layer_sizes.len - 1];
+        var max_size: usize = 0;
+        for (self.layer_sizes) |s| {
+            if (s > max_size) max_size = s;
+        }
+        const scratch_a = try allocator.alloc(f32, max_size);
+        defer allocator.free(scratch_a);
+        const scratch_b = try allocator.alloc(f32, max_size);
+        defer allocator.free(scratch_b);
+        @memcpy(scratch_a[0..input.len], input);
+
+        const output = try allocator.alloc(f32, output_size);
+        errdefer allocator.free(output);
+
+        var in_buf = scratch_a[0..input.len];
+        var use_a = true;
+        for (0..num_layers) |l| {
+            const in_size = self.layer_sizes[l];
+            const out_size = self.layer_sizes[l + 1];
+            const w_start = layer.startWeight(self.layer_sizes, l);
+            const b_start = layer.startBias(self.layer_sizes, l);
+            const W = self.weights[w_start..][0..(out_size * in_size)];
+            const b = self.biases[b_start..][0..out_size];
+
+            const is_last = (l == num_layers - 1);
+            const out_buf: []f32 = if (is_last)
+                output
+            else if (use_a)
+                scratch_b[0..out_size]
+            else
+                scratch_a[0..out_size];
+
+            const act_fn = act_fns[l];
+            for (0..out_size) |j| {
+                var sum: f32 = b[j];
+                for (0..in_size) |i| {
+                    sum += in_buf[i] * W[j * in_size + i];
+                }
+                out_buf[j] = act_fn(sum);
+            }
+
+            if (!is_last) {
+                in_buf = out_buf;
+                use_a = !use_a;
+            }
+        }
+        return output;
+    }
+
+    /// Forward pass using SIMD in the inner dot-product (4-wide). Caller owns returned slice.
+    pub fn forwardSimd(
+        self: *const Network,
+        allocator: std.mem.Allocator,
+        input: []const f32,
+        act_fn: ActivationFn,
+    ) ![]f32 {
+        if (input.len != self.layer_sizes[0]) return error.InputSizeMismatch;
+        const num_layers = self.layer_sizes.len - 1;
+        const output_size = self.layer_sizes[self.layer_sizes.len - 1];
+        var max_size: usize = 0;
+        for (self.layer_sizes) |s| {
+            if (s > max_size) max_size = s;
+        }
+        const scratch_a = try allocator.alloc(f32, max_size);
+        defer allocator.free(scratch_a);
+        const scratch_b = try allocator.alloc(f32, max_size);
+        defer allocator.free(scratch_b);
+        @memcpy(scratch_a[0..input.len], input);
+
+        const output = try allocator.alloc(f32, output_size);
+        errdefer allocator.free(output);
+
+        const Vec4 = @Vector(4, f32);
+        var in_buf = scratch_a[0..input.len];
+        var use_a = true;
+        for (0..num_layers) |l| {
+            const in_size = self.layer_sizes[l];
+            const out_size = self.layer_sizes[l + 1];
+            const w_start = layer.startWeight(self.layer_sizes, l);
+            const b_start = layer.startBias(self.layer_sizes, l);
+            const W = self.weights[w_start..][0..(out_size * in_size)];
+            const b = self.biases[b_start..][0..out_size];
+
+            const is_last = (l == num_layers - 1);
+            const out_buf: []f32 = if (is_last)
+                output
+            else if (use_a)
+                scratch_b[0..out_size]
+            else
+                scratch_a[0..out_size];
+
+            for (0..out_size) |j| {
+                var sum: f32 = b[j];
+                var i: usize = 0;
+                const row = W[j * in_size ..][0..in_size];
+                while (i + 4 <= in_size) : (i += 4) {
+                    const w_vec: Vec4 = .{ row[i], row[i + 1], row[i + 2], row[i + 3] };
+                    const in_vec: Vec4 = .{ in_buf[i], in_buf[i + 1], in_buf[i + 2], in_buf[i + 3] };
+                    sum += @reduce(.Add, w_vec * in_vec);
+                }
+                while (i < in_size) : (i += 1) {
+                    sum += in_buf[i] * row[i];
+                }
+                out_buf[j] = act_fn(sum);
+            }
+
+            if (!is_last) {
+                in_buf = out_buf;
+                use_a = !use_a;
+            }
+        }
+        return output;
+    }
+
     /// Batch forward: inputs flat [batch_size * input_size], returns flat [batch_size * output_size]. Caller owns.
     pub fn forwardBatch(
         self: *const Network,
@@ -147,16 +271,18 @@ pub const Network = struct {
         errdefer allocator.free(output);
         var i: usize = 0;
         while (i < batch_size) : (i += 1) {
-            const in_slice = inputs[i * input_size..][0..input_size];
+            const in_slice = inputs[i * input_size ..][0..input_size];
             const out_slice = try self.forward(allocator, in_slice, act_fn);
             defer allocator.free(out_slice);
-            @memcpy(output[i * output_size..][0..output_size], out_slice);
+            @memcpy(output[i * output_size ..][0..output_size], out_slice);
         }
         return output;
     }
 
     /// Save network to writer: num_layers (u32), layer_sizes, weights, biases.
     pub fn save(self: *const Network, writer: anytype) !void {
+        try writer.writeAll("OVO1");
+        try writer.writeInt(u32, 1, .little);
         try writer.writeInt(u32, @intCast(self.layer_sizes.len), .little);
         for (self.layer_sizes) |s| try writer.writeInt(u32, @intCast(s), .little);
         for (self.weights) |w| try writer.writeAll(std.mem.asBytes(&w));
@@ -165,6 +291,11 @@ pub const Network = struct {
 
     /// Load network from reader. Caller owns returned network; call deinit.
     pub fn load(allocator: std.mem.Allocator, reader: anytype) !Network {
+        var magic: [4]u8 = undefined;
+        const n = try reader.readAll(&magic);
+        if (n != magic.len or !std.mem.eql(u8, &magic, "OVO1")) return error.InvalidFormat;
+        const version = try reader.readInt(u32, .little);
+        if (version != 1) return error.UnsupportedVersion;
         const num_layers = try reader.readInt(u32, .little);
         if (num_layers < 2) return error.InvalidLayerSizes;
         const sizes = try allocator.alloc(usize, num_layers);
@@ -230,6 +361,46 @@ pub fn trainStepMse(
     return loss_val;
 }
 
+/// One minibatch SGD step: accumulate gradients over batch, average, update. Returns mean MSE.
+pub fn trainStepMseBatch(
+    net: *Network,
+    allocator: std.mem.Allocator,
+    inputs: []const f32,
+    targets: []const f32,
+    batch_size: usize,
+    lr: f32,
+    act_fn: ActivationFn,
+    act_derivative_fn: ActivationDerivativeFn,
+) !f32 {
+    const input_size = net.layer_sizes[0];
+    const output_size = net.layer_sizes[net.layer_sizes.len - 1];
+    if (inputs.len != batch_size * input_size) return error.InputSizeMismatch;
+    if (targets.len != batch_size * output_size) return error.TargetSizeMismatch;
+    var grads = try Gradients.allocGradients(allocator, net.layer_sizes);
+    defer grads.deinit();
+    @memset(grads.d_weights, 0);
+    @memset(grads.d_biases, 0);
+
+    var total_loss: f32 = 0;
+    for (0..batch_size) |b| {
+        const in_slice = inputs[b * input_size ..][0..input_size];
+        const target_slice = targets[b * output_size ..][0..output_size];
+        const pred = try net.forward(allocator, in_slice, act_fn);
+        defer allocator.free(pred);
+        total_loss += loss.mse(pred, target_slice);
+        const output_grad = try allocator.alloc(f32, pred.len);
+        defer allocator.free(output_grad);
+        loss.mseGradient(pred, target_slice, output_grad);
+        try backward(net, allocator, in_slice, output_grad, act_fn, act_derivative_fn, &grads);
+    }
+
+    const inv = 1.0 / @as(f32, @floatFromInt(batch_size));
+    for (grads.d_weights) |*g| g.* *= inv;
+    for (grads.d_biases) |*g| g.* *= inv;
+    update(net, lr, &grads);
+    return total_loss * inv;
+}
+
 fn backward(
     net: *const Network,
     allocator: std.mem.Allocator,
@@ -257,7 +428,7 @@ fn backward(
         const b_start = layer.startBias(net.layer_sizes, l);
         const W = net.weights[w_start..][0..(out_size * in_size)];
         const b = net.biases[b_start..][0..out_size];
-        const in_buf = acts[act_offset - in_size..][0..in_size];
+        const in_buf = acts[act_offset - in_size ..][0..in_size];
         const out_buf = acts[act_offset..][0..out_size];
         for (0..out_size) |j| {
             var sum: f32 = b[j];
@@ -341,12 +512,40 @@ test "network forward" {
     try std.testing.expect(out[0] >= 0.0 and out[0] <= 1.0);
 }
 
+test "network forwardWithActivations" {
+    const gpa = std.testing.allocator;
+    const sizes = [_]usize{ 2, 4, 1 };
+    var prng = std.Random.DefaultPrng.init(7);
+    var net = try Network.initXavier(gpa, &sizes, prng.random());
+    defer net.deinit();
+    const input = [_]f32{ 0.25, -0.1 };
+    const act_fns = [_]ActivationFn{ activation.relu, activation.sigmoid };
+    const out = try net.forwardWithActivations(gpa, &input, &act_fns);
+    defer gpa.free(out);
+    try std.testing.expectEqual(@as(usize, 1), out.len);
+    try std.testing.expect(out[0] >= 0.0 and out[0] <= 1.0);
+}
+
+test "network forwardSimd matches forward" {
+    const gpa = std.testing.allocator;
+    const sizes = [_]usize{ 2, 4, 1 };
+    var prng = std.Random.DefaultPrng.init(9);
+    var net = try Network.initXavier(gpa, &sizes, prng.random());
+    defer net.deinit();
+    const input = [_]f32{ 0.12, -0.7 };
+    const out_scalar = try net.forward(gpa, &input, activation.sigmoid);
+    defer gpa.free(out_scalar);
+    const out_simd = try net.forwardSimd(gpa, &input, activation.sigmoid);
+    defer gpa.free(out_simd);
+    try std.testing.expectApproxEqAbs(out_scalar[0], out_simd[0], 1e-5);
+}
+
 test "network forward input size mismatch" {
     const gpa = std.testing.allocator;
     const sizes = [_]usize{ 2, 4, 1 };
     var net = try Network.init(gpa, &sizes);
     defer net.deinit();
-    const input = [_]f32{ 0.5 };
+    const input = [_]f32{0.5};
     const result = net.forward(gpa, &input, activation.sigmoid);
     try std.testing.expectError(error.InputSizeMismatch, result);
 }
@@ -382,8 +581,65 @@ test "trainStepMse decreases loss" {
     var net = try Network.initXavier(gpa, &sizes, prng.random());
     defer net.deinit();
     const input = [_]f32{ 0.5, -0.3 };
-    const target = [_]f32{ 0.8 };
+    const target = [_]f32{0.8};
     const loss0 = try trainStepMse(net, gpa, &input, &target, 0.1, activation.sigmoid, activation.sigmoidDerivative);
     const loss1 = try trainStepMse(net, gpa, &input, &target, 0.1, activation.sigmoid, activation.sigmoidDerivative);
     try std.testing.expect(loss1 <= loss0 + 0.01);
+}
+
+test "trainStepMseBatch runs" {
+    const gpa = std.testing.allocator;
+    var prng = std.Random.DefaultPrng.init(123);
+    const sizes = [_]usize{ 2, 4, 1 };
+    var net = try Network.initXavier(gpa, &sizes, prng.random());
+    defer net.deinit();
+    const inputs = [_]f32{ 0.5, -0.3, 0.2, 0.9 };
+    const targets = [_]f32{ 0.8, 0.1 };
+    const loss_val = try trainStepMseBatch(
+        net,
+        gpa,
+        &inputs,
+        &targets,
+        2,
+        0.1,
+        activation.sigmoid,
+        activation.sigmoidDerivative,
+    );
+    try std.testing.expect(!std.math.isNan(loss_val));
+}
+
+test "gradient check (single weight)" {
+    const gpa = std.testing.allocator;
+    var prng = std.Random.DefaultPrng.init(2024);
+    const sizes = [_]usize{ 2, 2, 1 };
+    var net = try Network.initXavier(gpa, &sizes, prng.random());
+    defer net.deinit();
+    const input = [_]f32{ 0.4, -0.2 };
+    const target = [_]f32{ 0.7 };
+
+    const pred = try net.forward(gpa, &input, activation.sigmoid);
+    defer gpa.free(pred);
+    const output_grad = try gpa.alloc(f32, pred.len);
+    defer gpa.free(output_grad);
+    loss.mseGradient(pred, &target, output_grad);
+    var grads = try Gradients.allocGradients(gpa, &sizes);
+    defer grads.deinit();
+    try backward(&net, gpa, &input, output_grad, activation.sigmoid, activation.sigmoidDerivative, &grads);
+    const analytic = grads.d_weights[0];
+
+    const eps: f32 = 1e-3;
+    const w0 = net.weights[0];
+    net.weights[0] = w0 + eps;
+    const pred_plus = try net.forward(gpa, &input, activation.sigmoid);
+    defer gpa.free(pred_plus);
+    const loss_plus = loss.mse(pred_plus, &target);
+
+    net.weights[0] = w0 - eps;
+    const pred_minus = try net.forward(gpa, &input, activation.sigmoid);
+    defer gpa.free(pred_minus);
+    const loss_minus = loss.mse(pred_minus, &target);
+    net.weights[0] = w0;
+
+    const numerical = (loss_plus - loss_minus) / (2.0 * eps);
+    try std.testing.expectApproxEqAbs(analytic, numerical, 1e-2);
 }
