@@ -9,6 +9,11 @@ pub const ActivationFn = *const fn (f32) f32;
 /// Derivative for backprop: d/dx of activation at preactivation x.
 pub const ActivationDerivativeFn = *const fn (f32) f32;
 
+const ActSpec = union(enum) {
+    single: ActivationFn,
+    per_layer: []const ActivationFn,
+};
+
 /// Network owns layer_sizes, weights, and biases. Use init/deinit for lifecycle.
 pub const Network = struct {
     layer_sizes: []const usize,
@@ -75,20 +80,16 @@ pub const Network = struct {
         self.* = undefined;
     }
 
-    /// Forward pass. Uses `act_fn` for all layers. Caller owns returned slice.
-    pub fn forward(
+    fn forwardInternal(
         self: *const Network,
         allocator: std.mem.Allocator,
         input: []const f32,
-        act_fn: ActivationFn,
+        act_spec: ActSpec,
     ) ![]f32 {
         if (input.len != self.layer_sizes[0]) return error.InputSizeMismatch;
         const num_layers = self.layer_sizes.len - 1;
         const output_size = self.layer_sizes[self.layer_sizes.len - 1];
-        var max_size: usize = 0;
-        for (self.layer_sizes) |s| {
-            if (s > max_size) max_size = s;
-        }
+        const max_size = layer.maxLayerSize(self.layer_sizes);
         const scratch_a = try allocator.alloc(f32, max_size);
         defer allocator.free(scratch_a);
         const scratch_b = try allocator.alloc(f32, max_size);
@@ -116,6 +117,10 @@ pub const Network = struct {
             else
                 scratch_a[0..out_size];
 
+            const act_fn = switch (act_spec) {
+                .single => |fn_single| fn_single,
+                .per_layer => |fns| fns[l],
+            };
             for (0..out_size) |j| {
                 var sum: f32 = b[j];
                 for (0..in_size) |i| {
@@ -132,6 +137,16 @@ pub const Network = struct {
         return output;
     }
 
+    /// Forward pass. Uses `act_fn` for all layers. Caller owns returned slice.
+    pub fn forward(
+        self: *const Network,
+        allocator: std.mem.Allocator,
+        input: []const f32,
+        act_fn: ActivationFn,
+    ) ![]f32 {
+        return self.forwardInternal(allocator, input, .{ .single = act_fn });
+    }
+
     /// Forward pass with per-layer activations. act_fns.len must equal num_layers.
     pub fn forwardWithActivations(
         self: *const Network,
@@ -139,56 +154,9 @@ pub const Network = struct {
         input: []const f32,
         act_fns: []const ActivationFn,
     ) ![]f32 {
-        if (input.len != self.layer_sizes[0]) return error.InputSizeMismatch;
         const num_layers = self.layer_sizes.len - 1;
         if (act_fns.len != num_layers) return error.ActivationCountMismatch;
-        const output_size = self.layer_sizes[self.layer_sizes.len - 1];
-        var max_size: usize = 0;
-        for (self.layer_sizes) |s| {
-            if (s > max_size) max_size = s;
-        }
-        const scratch_a = try allocator.alloc(f32, max_size);
-        defer allocator.free(scratch_a);
-        const scratch_b = try allocator.alloc(f32, max_size);
-        defer allocator.free(scratch_b);
-        @memcpy(scratch_a[0..input.len], input);
-
-        const output = try allocator.alloc(f32, output_size);
-        errdefer allocator.free(output);
-
-        var in_buf = scratch_a[0..input.len];
-        var use_a = true;
-        for (0..num_layers) |l| {
-            const in_size = self.layer_sizes[l];
-            const out_size = self.layer_sizes[l + 1];
-            const w_start = layer.startWeight(self.layer_sizes, l);
-            const b_start = layer.startBias(self.layer_sizes, l);
-            const W = self.weights[w_start..][0..(out_size * in_size)];
-            const b = self.biases[b_start..][0..out_size];
-
-            const is_last = (l == num_layers - 1);
-            const out_buf: []f32 = if (is_last)
-                output
-            else if (use_a)
-                scratch_b[0..out_size]
-            else
-                scratch_a[0..out_size];
-
-            const act_fn = act_fns[l];
-            for (0..out_size) |j| {
-                var sum: f32 = b[j];
-                for (0..in_size) |i| {
-                    sum += in_buf[i] * W[j * in_size + i];
-                }
-                out_buf[j] = act_fn(sum);
-            }
-
-            if (!is_last) {
-                in_buf = out_buf;
-                use_a = !use_a;
-            }
-        }
-        return output;
+        return self.forwardInternal(allocator, input, .{ .per_layer = act_fns });
     }
 
     /// Forward pass using SIMD in the inner dot-product (4-wide). Caller owns returned slice.
@@ -201,10 +169,7 @@ pub const Network = struct {
         if (input.len != self.layer_sizes[0]) return error.InputSizeMismatch;
         const num_layers = self.layer_sizes.len - 1;
         const output_size = self.layer_sizes[self.layer_sizes.len - 1];
-        var max_size: usize = 0;
-        for (self.layer_sizes) |s| {
-            if (s > max_size) max_size = s;
-        }
+        const max_size = layer.maxLayerSize(self.layer_sizes);
         const scratch_a = try allocator.alloc(f32, max_size);
         defer allocator.free(scratch_a);
         const scratch_b = try allocator.alloc(f32, max_size);
@@ -439,10 +404,7 @@ fn backward(
         preact_offset += out_size;
         act_offset += out_size;
     }
-    var max_size: usize = 0;
-    for (net.layer_sizes) |s| {
-        if (s > max_size) max_size = s;
-    }
+    const max_size = layer.maxLayerSize(net.layer_sizes);
     var grad_cur = try allocator.alloc(f32, max_size);
     defer allocator.free(grad_cur);
     var grad_prev = try allocator.alloc(f32, max_size);

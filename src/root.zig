@@ -1,4 +1,6 @@
-//! By convention, root.zig is the root source file when making a package.
+//! Ovo: feedforward neural network in Zig.
+//!
+//! Re-exports: network, layer, activation, loss, csv, cli.
 const std = @import("std");
 const Io = std.Io;
 
@@ -6,6 +8,8 @@ pub const network = @import("network.zig");
 pub const layer = @import("layer.zig");
 pub const activation = @import("activation.zig");
 pub const loss = @import("loss.zig");
+pub const csv = @import("csv.zig");
+pub const cli = @import("cli.zig");
 
 pub const Network = network.Network;
 pub const Gradients = network.Gradients;

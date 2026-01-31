@@ -45,9 +45,8 @@ pub fn main(init: std.process.Init) !void {
         var prng = std.Random.DefaultPrng.init(0x1234);
         var net = try ovo.Network.initXavier(arena, &layer_sizes, prng.random());
         defer net.deinit();
-        const output = try net.forward(arena, input, ovo.activation.sigmoid);
-        defer arena.free(output);
-        try stdout_writer.print("NN forward -> [{d:.6}]\n", .{output[0]});
+        const output_value = try forwardSingleOutput(arena, &net, input, ovo.activation.sigmoid);
+        try stdout_writer.print("NN forward -> [{d:.6}]\n", .{output_value});
         try stdout_writer.flush();
         return;
     }
@@ -57,9 +56,8 @@ pub fn main(init: std.process.Init) !void {
     var net = try ovo.Network.init(arena, &layer_sizes);
     defer net.deinit();
     const input = [_]f32{ 0.5, -0.3 };
-    const output = try net.forward(arena, &input, ovo.activation.sigmoid);
-    defer arena.free(output);
-    try stdout_writer.print("NN forward [0.5, -0.3] -> [{d:.6}]\n", .{output[0]});
+    const output_value = try forwardSingleOutput(arena, &net, &input, ovo.activation.sigmoid);
+    try stdout_writer.print("NN forward [0.5, -0.3] -> [{d:.6}]\n", .{output_value});
 
     try stdout_writer.flush(); // Don't forget to flush!
 }
@@ -83,6 +81,17 @@ fn parseFloatArgs(
     return list.toOwnedSlice(allocator);
 }
 
+fn forwardSingleOutput(
+    allocator: std.mem.Allocator,
+    net: *const ovo.Network,
+    input: []const f32,
+    act_fn: *const fn (f32) f32,
+) !f32 {
+    const output = try net.forward(allocator, input, act_fn);
+    defer allocator.free(output);
+    return output[0];
+}
+
 fn trainFromCsv(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -92,6 +101,7 @@ fn trainFromCsv(
 ) !void {
     var batch_size: usize = 0;
     var layers_override: ?[]const usize = null;
+    defer if (layers_override) |layers| allocator.free(layers);
     var positional_start: usize = 0;
     var i: usize = 0;
     while (i < args.len) {

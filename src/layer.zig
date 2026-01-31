@@ -54,6 +54,15 @@ pub fn totalBiasCount(layer_sizes: []const usize) usize {
     return n;
 }
 
+/// Max size across all layers (useful for scratch buffers).
+pub fn maxLayerSize(layer_sizes: []const usize) usize {
+    var max_size: usize = 0;
+    for (layer_sizes) |s| {
+        if (s > max_size) max_size = s;
+    }
+    return max_size;
+}
+
 test "layer offsets" {
     const sizes = [_]usize{ 2, 4, 4, 1 };
     try std.testing.expectEqual(@as(usize, 0), startWeight(&sizes, 0));

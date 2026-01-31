@@ -29,7 +29,17 @@ export fn nn_forward(input_offset: u32, output_offset: u32) void {
     const input_ptr = @as([*]const f32, @ptrFromInt(input_offset));
     const output_ptr = @as([*]f32, @ptrFromInt(output_offset));
     const input = input_ptr[0..2];
-    const out = net.forward(arena.allocator(), input, ovo.activation.sigmoid) catch return;
-    defer arena.allocator().free(out);
-    output_ptr[0] = out[0];
+    const output_value = forwardSingleOutput(arena.allocator(), &net, input, ovo.activation.sigmoid) catch return;
+    output_ptr[0] = output_value;
+}
+
+fn forwardSingleOutput(
+    allocator: std.mem.Allocator,
+    net_ptr: *const ovo.Network,
+    input: []const f32,
+    act_fn: *const fn (f32) f32,
+) !f32 {
+    const output = try net_ptr.forward(allocator, input, act_fn);
+    defer allocator.free(output);
+    return output[0];
 }
