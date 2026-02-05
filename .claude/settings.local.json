@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wc:*)",
+      "Bash(find:*)",
+      "Bash(ls:*)",
+      "Bash(tree:*)",
+      "Bash(zig build:*)",
+      "Bash(grep:*)",
+      "Bash(xargs:*)"
+    ]
+  }
+}

@@ -1,0 +1,84 @@
+.{
+    .name = .@"{{PROJECT_NAME}}",
+    .version = "0.1.0",
+    .description = "A modern C17 project built with ovo",
+    .license = "MIT",
+    .authors = .{
+        "{{AUTHOR_NAME}} <{{AUTHOR_EMAIL}}>",
+    },
+
+    // Minimum ovo version required
+    .minimum_ovo_version = "0.1.0",
+
+    .defaults = .{
+        .c_standard = .c17,
+        .compiler = .auto,
+        .optimization = .debug,
+    },
+
+    .targets = .{
+        .@"{{PROJECT_NAME}}" = .{
+            .type = .executable,
+            .language = .c,
+            .sources = .{"src/**/*.c"},
+            .include_dirs = .{"include"},
+            .flags = .{
+                .common = .{
+                    "-Wall",
+                    "-Wextra",
+                    "-Wpedantic",
+                    "-Wconversion",
+                    "-Wshadow",
+                    "-Wstrict-prototypes",
+                },
+            },
+            .link_libs = .{
+                // "m",       // Math library
+                // "pthread", // POSIX threads
+            },
+        },
+    },
+
+    .tests = .{
+        .unit = .{
+            .sources = .{"tests/**/*.c"},
+            .link = .{"{{PROJECT_NAME}}"},
+        },
+    },
+
+    .profiles = .{
+        .debug = .{
+            .optimization = .none,
+            .debug_info = true,
+            .defines = .{"DEBUG"},
+            .flags = .{ "-g3", "-fstack-protector-strong" },
+        },
+        .release = .{
+            .optimization = .speed,
+            .debug_info = false,
+            .defines = .{"NDEBUG"},
+            .lto = true,
+        },
+        .asan = .{
+            .optimization = .none,
+            .debug_info = true,
+            .sanitizers = .{.address},
+            .flags = .{"-fno-omit-frame-pointer"},
+        },
+        .ubsan = .{
+            .optimization = .none,
+            .debug_info = true,
+            .sanitizers = .{.undefined},
+        },
+        .msan = .{
+            .optimization = .none,
+            .debug_info = true,
+            .sanitizers = .{.memory},
+            .flags = .{"-fno-omit-frame-pointer"},
+        },
+    },
+
+    .dependencies = .{
+        // Example: .curl = .{ .system = true },
+    },
+}

@@ -1,0 +1,37 @@
+.{
+    .name = .@"{{PROJECT_NAME}}",
+    .version = "0.1.0",
+    .description = "A header-only C++ library built with ovo",
+    .license = "MIT",
+    .authors = .{
+        "{{AUTHOR_NAME}} <{{AUTHOR_EMAIL}}>",
+    },
+
+    // Minimum ovo version required
+    .minimum_ovo_version = "0.1.0",
+
+    .defaults = .{
+        .cpp_standard = .cpp20,
+        .c_standard = .c17,
+        .compiler = .auto,
+    },
+
+    .targets = .{
+        .@"{{PROJECT_NAME}}" = .{
+            .type = .header_only,
+            .public_include = .{"include"},
+        },
+    },
+
+    .tests = .{
+        .unit = .{
+            .sources = .{"tests/**/*.cpp"},
+            .link = .{"{{PROJECT_NAME}}"},
+        },
+    },
+
+    .dependencies = .{
+        // Example dependencies:
+        // .fmt = .{ .git = "https://github.com/fmtlib/fmt", .tag = "10.2.0" },
+    },
+}

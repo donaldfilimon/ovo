@@ -1,0 +1,37 @@
+.{
+    .name = .@"{{PROJECT_NAME}}",
+    .version = "0.1.0",
+    .description = "A C header-only library built with ovo",
+    .license = "MIT",
+    .authors = .{
+        "{{AUTHOR_NAME}} <{{AUTHOR_EMAIL}}>",
+    },
+
+    // Minimum ovo version required
+    .minimum_ovo_version = "0.1.0",
+
+    .defaults = .{
+        .c_standard = .c17,
+        .compiler = .auto,
+        .optimization = .debug,
+    },
+
+    .targets = .{
+        .@"{{PROJECT_NAME}}" = .{
+            .type = .header_only,
+            .language = .c,
+            .public_include = .{"include"},
+        },
+    },
+
+    .tests = .{
+        .unit = .{
+            .sources = .{"tests/**/*.c"},
+            .link = .{"{{PROJECT_NAME}}"},
+        },
+    },
+
+    .dependencies = .{
+        // Example: .curl = .{ .system = true },
+    },
+}

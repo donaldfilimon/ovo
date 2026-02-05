@@ -1,0 +1,64 @@
+.{
+    .name = .@"{{PROJECT_NAME}}",
+    .version = "0.1.0",
+    .description = "A modern C++23 application built with ovo",
+    .license = "MIT",
+    .authors = .{
+        "{{AUTHOR_NAME}} <{{AUTHOR_EMAIL}}>",
+    },
+
+    // Minimum ovo version required
+    .minimum_ovo_version = "0.1.0",
+
+    .defaults = .{
+        .cpp_standard = .cpp23,
+        .c_standard = .c17,
+        .compiler = .auto,
+        .optimization = .debug,
+    },
+
+    .targets = .{
+        .@"{{PROJECT_NAME}}" = .{
+            .type = .executable,
+            .sources = .{"src/**/*.cpp"},
+            .include_dirs = .{"include"},
+            .flags = .{
+                .common = .{ "-Wall", "-Wextra", "-Wpedantic" },
+                .release = .{"-flto"},
+            },
+        },
+    },
+
+    .tests = .{
+        .unit = .{
+            .sources = .{"tests/**/*.cpp"},
+            .link = .{"{{PROJECT_NAME}}"},
+        },
+    },
+
+    .profiles = .{
+        .debug = .{
+            .optimization = .none,
+            .debug_info = true,
+            .sanitizers = .{ .address, .undefined },
+            .defines = .{"DEBUG"},
+        },
+        .release = .{
+            .optimization = .speed,
+            .debug_info = false,
+            .lto = true,
+            .defines = .{"NDEBUG"},
+        },
+        .release_safe = .{
+            .optimization = .safe,
+            .debug_info = true,
+            .defines = .{"NDEBUG"},
+        },
+    },
+
+    .dependencies = .{
+        // Example dependencies:
+        // .fmt = .{ .git = "https://github.com/fmtlib/fmt", .tag = "10.2.0" },
+        // .spdlog = .{ .git = "https://github.com/gabime/spdlog", .tag = "v1.13.0" },
+    },
+}

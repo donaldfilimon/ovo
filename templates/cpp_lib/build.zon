@@ -1,0 +1,85 @@
+.{
+    .name = .@"{{PROJECT_NAME}}",
+    .version = "0.1.0",
+    .description = "A modern C++ library built with ovo",
+    .license = "MIT",
+    .authors = .{
+        "{{AUTHOR_NAME}} <{{AUTHOR_EMAIL}}>",
+    },
+
+    // Minimum ovo version required
+    .minimum_ovo_version = "0.1.0",
+
+    .defaults = .{
+        .cpp_standard = .cpp20,
+        .c_standard = .c17,
+        .compiler = .auto,
+    },
+
+    .targets = .{
+        // Main library (static by default)
+        .@"{{PROJECT_NAME}}" = .{
+            .type = .static_library,
+            .sources = .{"src/**/*.cpp"},
+            .public_include = .{"include"},
+            .private_include = .{"src"},
+            .modules = .auto, // auto-detect C++20 modules
+            .flags = .{
+                .common = .{ "-Wall", "-Wextra", "-Wpedantic", "-fPIC" },
+            },
+        },
+
+        // Shared library variant
+        .@"{{PROJECT_NAME}}_shared" = .{
+            .type = .shared_library,
+            .sources = .{"src/**/*.cpp"},
+            .public_include = .{"include"},
+            .defines = .{
+                .public = .{"{{PROJECT_NAME_UPPER}}_SHARED"},
+                .private = .{"{{PROJECT_NAME_UPPER}}_BUILDING"},
+            },
+            .flags = .{
+                .common = .{ "-Wall", "-Wextra", "-fPIC" },
+            },
+        },
+    },
+
+    .tests = .{
+        .unit = .{
+            .sources = .{"tests/**/*.cpp"},
+            .link = .{"{{PROJECT_NAME}}"},
+        },
+    },
+
+    .profiles = .{
+        .debug = .{
+            .optimization = .none,
+            .debug_info = true,
+            .defines = .{"DEBUG"},
+        },
+        .release = .{
+            .optimization = .safe,
+            .debug_info = false,
+            .defines = .{"NDEBUG"},
+        },
+        .coverage = .{
+            .optimization = .none,
+            .debug_info = true,
+            .flags = .{"--coverage"},
+            .link_flags = .{"--coverage"},
+        },
+    },
+
+    // Installation configuration
+    .install = .{
+        .headers = "include",
+        .library = true,
+        .pkgconfig = true,
+        .cmake_config = true,
+    },
+
+    .dependencies = .{
+        // Example dependencies:
+        // .fmt = .{ .git = "https://github.com/fmtlib/fmt", .tag = "10.2.0" },
+    },
+}

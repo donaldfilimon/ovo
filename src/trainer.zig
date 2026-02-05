@@ -221,7 +221,7 @@ test "gradient check (single weight)" {
     var net = try Network.initXavier(gpa, &sizes, prng.random());
     defer net.deinit();
     const input = [_]f32{ 0.4, -0.2 };
-    const target = [_]f32{ 0.7 };
+    const target = [_]f32{0.7};
 
     const pred = try net.forward(gpa, &input, activation.sigmoid);
     defer gpa.free(pred);

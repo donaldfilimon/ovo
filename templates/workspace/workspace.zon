@@ -1,0 +1,112 @@
+.{
+    .workspace = true,
+    .name = "{{PROJECT_NAME}}",
+    .version = "0.1.0",
+    .description = "A monorepo workspace containing multiple packages",
+    .license = "MIT",
+    .authors = .{
+        "{{AUTHOR_NAME}} <{{AUTHOR_EMAIL}}>",
+    },
+
+    // Minimum ovo version required
+    .minimum_ovo_version = "0.1.0",
+
+    // Workspace members (subdirectories with their own build.zon)
+    .members = .{
+        "packages/core",
+        "packages/utils",
+        "apps/cli",
+    },
+
+    // Or use glob patterns
+    .member_patterns = .{
+        "libs/*",
+        "services/*",
+    },
+
+    // Exclude from workspace
+    .exclude = .{
+        "archived/*",
+        "experimental/*",
+        "**/node_modules",
+        "**/target",
+        "**/.git",
+    },
+
+    // Default members to build when no specific package is specified
+    .default_members = .{
+        "apps/*",
+    },
+
+    // Settings shared by all members
+    .shared = .{
+        .cpp_standard = .cpp23,
+        .c_standard = .c17,
+
+        // Shared compiler flags
+        .flags = .{
+            .common = .{ "-Wall", "-Wextra" },
+        },
+
+        // Shared include directories
+        .include_dirs = .{
+            "shared/include",
+        },
+
+        .profiles = .{
+            .debug = .{
+                .optimization = .none,
+                .debug_info = true,
+            },
+            .release = .{
+                .optimization = .speed,
+                .lto = true,
+            },
+            .ci = .{
+                .optimization = .safe,
+                .flags = .{"-Werror"},
+            },
+        },
+    },
+
+    // Dependencies available to all workspace members
+    .workspace_dependencies = .{
+        // Add shared dependencies here
+        // .fmt = .{ .git = "https://github.com/fmtlib/fmt", .tag = "10.2.0" },
+        // .spdlog = .{ .git = "https://github.com/gabime/spdlog", .tag = "v1.13.0" },
+    },
+
+    // Workspace-wide settings
+    .settings = .{
+        // Enable parallel builds
+        .parallel_jobs = 0, // 0 = auto-detect CPU count
+
+        // Build cache location
+        .cache_dir = ".ovo-cache",
+
+        // Generate compile_commands.json for IDE support
+        .compile_commands = true,
+    },
+
+    // Scripts that can be run with `ovo run <script>`
+    .scripts = .{
+        .@"test:all" = "ovo test --workspace",
+        .@"build:all" = "ovo build --workspace",
+        .@"clean:all" = "ovo clean --workspace",
+        .format = "find . -name '*.cpp' -o -name '*.hpp' -o -name '*.c' -o -name '*.h' | xargs clang-format -i",
+        .lint = "find . -name '*.cpp' -o -name '*.c' | xargs clang-tidy",
+    },
+
+    // CI/CD configuration
+    .ci = .{
+        .github_actions = true,
+        .coverage = .{
+            .enabled = true,
+            .format = .{ .lcov, .html },
+            .exclude = .{
+                "tests/*",
+                "**/test_*.cpp",
+            },
+        },
+    },
+}
