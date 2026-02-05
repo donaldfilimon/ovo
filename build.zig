@@ -98,7 +98,15 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // Neural network module (legacy, for backwards compatibility)
+    const neural_mod = b.addModule("ovo_neural", .{
+        .root_source_file = b.path("src/neural/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Main public module (re-exports everything)
+    // Note: neural module is imported via file path in root.zig, not as a module dependency
     const ovo_mod = b.addModule("ovo", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -165,6 +173,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "package", .mod = package_mod },
         .{ .name = "translate", .mod = translate_mod },
         .{ .name = "cli", .mod = cli_mod },
+        .{ .name = "neural", .mod = neural_mod },
     };
 
     for (test_modules) |tm| {

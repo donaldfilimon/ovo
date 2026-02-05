@@ -41,6 +41,7 @@ const profile_mod = @import("profile.zig");
 const dependency_mod = @import("dependency.zig");
 const target_mod = @import("target.zig");
 const workspace_mod = @import("workspace.zig");
+const validation = @import("validation.zig");
 
 // Re-export commonly used types
 pub const Platform = platform_mod.Platform;
@@ -556,21 +557,13 @@ pub const Project = struct {
         }
 
         // Check for duplicate target names
-        for (self.targets, 0..) |t1, i| {
-            for (self.targets[i + 1 ..]) |t2| {
-                if (std.mem.eql(u8, t1.name, t2.name)) {
-                    return ValidateError.DuplicateTargetName;
-                }
-            }
+        if (validation.hasDuplicateName(Target, self.targets, targetName)) {
+            return ValidateError.DuplicateTargetName;
         }
 
         // Check for duplicate dependency names
-        for (self.dependencies, 0..) |d1, i| {
-            for (self.dependencies[i + 1 ..]) |d2| {
-                if (std.mem.eql(u8, d1.name, d2.name)) {
-                    return ValidateError.DuplicateDependencyName;
-                }
-            }
+        if (validation.hasDuplicateName(Dependency, self.dependencies, dependencyName)) {
+            return ValidateError.DuplicateDependencyName;
         }
 
         // Validate workspace if present
@@ -587,6 +580,14 @@ pub const Project = struct {
         return self.workspace != null;
     }
 };
+
+fn targetName(target: Target) []const u8 {
+    return target.name;
+}
+
+fn dependencyName(dep: Dependency) []const u8 {
+    return dep.name;
+}
 
 /// Parse errors.
 pub const ParseError = error{

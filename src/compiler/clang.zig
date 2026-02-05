@@ -845,49 +845,7 @@ fn parseClangDiagnostics(allocator: Allocator, stderr: []const u8) ![]Diagnostic
 
 /// Parse single Clang diagnostic line
 fn parseClangDiagnosticLine(allocator: Allocator, line: []const u8) !Diagnostic {
-    // Format: file:line:col: level: message [-Wflag]
-    var parts = std.mem.splitScalar(u8, line, ':');
-
-    const file = parts.next() orelse return error.InvalidFormat;
-    const line_str = parts.next() orelse return error.InvalidFormat;
-    const col_str = parts.next() orelse return error.InvalidFormat;
-    const rest = parts.rest();
-
-    const trimmed = std.mem.trim(u8, rest, " ");
-    const level_end = std.mem.indexOfScalar(u8, trimmed, ':') orelse return error.InvalidFormat;
-    const level_str = std.mem.trim(u8, trimmed[0..level_end], " ");
-    var message = std.mem.trim(u8, trimmed[level_end + 1 ..], " ");
-
-    // Extract warning code if present
-    var code: ?[]const u8 = null;
-    if (std.mem.lastIndexOfScalar(u8, message, '[')) |bracket_start| {
-        if (std.mem.lastIndexOfScalar(u8, message, ']')) |bracket_end| {
-            if (bracket_end > bracket_start) {
-                code = try allocator.dupe(u8, message[bracket_start + 1 .. bracket_end]);
-                message = std.mem.trim(u8, message[0..bracket_start], " ");
-            }
-        }
-    }
-
-    const level: DiagnosticLevel = if (std.mem.eql(u8, level_str, "error"))
-        .error_
-    else if (std.mem.eql(u8, level_str, "warning"))
-        .warning
-    else if (std.mem.eql(u8, level_str, "note"))
-        .note
-    else if (std.mem.eql(u8, level_str, "fatal error"))
-        .fatal
-    else
-        return error.InvalidFormat;
-
-    return .{
-        .level = level,
-        .file = try allocator.dupe(u8, file),
-        .line = std.fmt.parseInt(u32, line_str, 10) catch null,
-        .column = std.fmt.parseInt(u32, col_str, 10) catch null,
-        .message = try allocator.dupe(u8, message),
-        .code = code,
-    };
+    return interface.parseCommonDiagnosticLine(allocator, line);
 }
 
 test "Clang version parsing" {

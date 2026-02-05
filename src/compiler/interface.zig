@@ -299,6 +299,52 @@ pub const Diagnostic = struct {
     }
 };
 
+/// Parse a diagnostic line in the common compiler format:
+/// file:line:col: level: message [-Wflag]
+pub fn parseCommonDiagnosticLine(allocator: Allocator, line: []const u8) !Diagnostic {
+    var parts = std.mem.splitScalar(u8, line, ':');
+
+    const file = parts.next() orelse return error.InvalidFormat;
+    const line_str = parts.next() orelse return error.InvalidFormat;
+    const col_str = parts.next() orelse return error.InvalidFormat;
+    const rest = parts.rest();
+
+    const trimmed = std.mem.trim(u8, rest, " ");
+    const level_end = std.mem.indexOfScalar(u8, trimmed, ':') orelse return error.InvalidFormat;
+    const level_str = std.mem.trim(u8, trimmed[0..level_end], " ");
+    var message = std.mem.trim(u8, trimmed[level_end + 1 ..], " ");
+
+    // Extract warning code if present
+    var code: ?[]const u8 = null;
+    if (std.mem.lastIndexOfScalar(u8, message, '[')) |bracket_start| {
+        if (std.mem.lastIndexOfScalar(u8, message, ']')) |bracket_end| {
+            if (bracket_end > bracket_start) {
+                code = try allocator.dupe(u8, message[bracket_start + 1 .. bracket_end]);
+                message = std.mem.trim(u8, message[0..bracket_start], " ");
+            }
+        }
+    }
+
+    const level = parseDiagnosticLevel(level_str) orelse return error.InvalidFormat;
+
+    return .{
+        .level = level,
+        .file = try allocator.dupe(u8, file),
+        .line = std.fmt.parseInt(u32, line_str, 10) catch null,
+        .column = std.fmt.parseInt(u32, col_str, 10) catch null,
+        .message = try allocator.dupe(u8, message),
+        .code = code,
+    };
+}
+
+fn parseDiagnosticLevel(level_str: []const u8) ?DiagnosticLevel {
+    if (std.mem.eql(u8, level_str, "error")) return .error_;
+    if (std.mem.eql(u8, level_str, "warning")) return .warning;
+    if (std.mem.eql(u8, level_str, "note")) return .note;
+    if (std.mem.eql(u8, level_str, "fatal error")) return .fatal;
+    return null;
+}
+
 /// Compilation result
 pub const CompileResult = struct {
     success: bool,

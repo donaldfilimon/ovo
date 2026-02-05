@@ -33,6 +33,7 @@ const platform_mod = @import("platform.zig");
 const standard_mod = @import("standard.zig");
 const profile_mod = @import("profile.zig");
 const dependency_mod = @import("dependency.zig");
+const validation = @import("validation.zig");
 
 const Platform = platform_mod.Platform;
 const CStandard = standard_mod.CStandard;
@@ -275,14 +276,8 @@ pub const Workspace = struct {
         }
 
         // Check for duplicate member names
-        for (self.members, 0..) |m1, i| {
-            const name1 = m1.effectiveName();
-            for (self.members[i + 1 ..]) |m2| {
-                const name2 = m2.effectiveName();
-                if (std.mem.eql(u8, name1, name2)) {
-                    return ValidateError.DuplicateMemberName;
-                }
-            }
+        if (validation.hasDuplicateName(Member, self.members, memberName)) {
+            return ValidateError.DuplicateMemberName;
         }
 
         // Validate each member
@@ -293,6 +288,10 @@ pub const Workspace = struct {
         }
     }
 };
+
+fn memberName(member: Member) []const u8 {
+    return member.effectiveName();
+}
 
 /// Dependency graph for workspace members.
 pub const DependencyGraph = struct {
