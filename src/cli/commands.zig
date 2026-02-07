@@ -202,9 +202,50 @@ pub const DirHandle = struct {
         }
     }
 
-    /// Delete a directory tree recursively (stub - complex to implement with C lib)
-    pub fn deleteTree(_: DirHandle, _: []const u8) !void {
-        // For now, this is a no-op - implementing recursive delete requires more work
+    /// Delete a directory tree recursively using C library APIs
+    pub fn deleteTree(_: DirHandle, path: []const u8) !void {
+        deleteTreeRecursive(path) catch return error.AccessDenied;
+    }
+
+    const extern_c = struct {
+        extern "c" fn unlink(path: [*:0]const u8) c_int;
+        extern "c" fn rmdir(path: [*:0]const u8) c_int;
+    };
+
+    fn getDirentName(entry: *const std.c.dirent) [*:0]const u8 {
+        return @ptrCast(&entry.name);
+    }
+
+    fn deleteTreeRecursive(path: []const u8) !void {
+        var path_buf: [4096]u8 = undefined;
+        if (path.len >= path_buf.len) return error.NameTooLong;
+        @memcpy(path_buf[0..path.len], path);
+        path_buf[path.len] = 0;
+
+        const dir = std.c.opendir(@ptrCast(&path_buf)) orelse return error.FileNotFound;
+        defer _ = std.c.closedir(dir);
+
+        while (std.c.readdir(dir)) |entry| {
+            const name = std.mem.span(getDirentName(entry));
+            if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) continue;
+
+            var child_buf: [4096]u8 = undefined;
+            if (path.len + 1 + name.len >= child_buf.len) continue;
+            @memcpy(child_buf[0..path.len], path);
+            child_buf[path.len] = '/';
+            @memcpy(child_buf[path.len + 1 ..][0..name.len], name);
+            child_buf[path.len + 1 + name.len] = 0;
+
+            const child_path = child_buf[0 .. path.len + 1 + name.len];
+
+            if (entry.type == std.c.DT.DIR) {
+                try deleteTreeRecursive(child_path);
+            } else {
+                _ = extern_c.unlink(@ptrCast(&child_buf));
+            }
+        }
+
+        _ = extern_c.rmdir(@ptrCast(&path_buf));
     }
 
     /// Get the real path of a file

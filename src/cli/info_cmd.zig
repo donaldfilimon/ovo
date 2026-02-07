@@ -161,17 +161,25 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
         try ctx.stdout.print("\n", .{});
         try ctx.stdout.bold("Environment\n", .{});
 
-        // Compiler detection (simulated)
-        try printField(ctx.stdout, "Compiler", "clang++ 15.0.0");
+        // Compiler detection
+        const has_clangpp = commands.findInPathC("clang++");
+        const has_gcc = commands.findInPathC("g++");
+        if (has_clangpp) {
+            try printField(ctx.stdout, "Compiler", "clang++ (detected)");
+        } else if (has_gcc) {
+            try printField(ctx.stdout, "Compiler", "g++ (detected)");
+        } else {
+            try printField(ctx.stdout, "Compiler", "none found");
+        }
         try printField(ctx.stdout, "Platform", @tagName(@import("builtin").os.tag));
         try printField(ctx.stdout, "Architecture", @tagName(@import("builtin").cpu.arch));
 
         // Check for tools
         const tools = [_]struct { name: []const u8, available: bool }{
-            .{ .name = "clang-format", .available = true },
-            .{ .name = "clang-tidy", .available = true },
-            .{ .name = "cmake", .available = true },
-            .{ .name = "ninja", .available = false },
+            .{ .name = "clang-format", .available = commands.findInPathC("clang-format") },
+            .{ .name = "clang-tidy", .available = commands.findInPathC("clang-tidy") },
+            .{ .name = "cmake", .available = commands.findInPathC("cmake") },
+            .{ .name = "ninja", .available = commands.findInPathC("ninja") },
         };
 
         try ctx.stdout.print("\n", .{});

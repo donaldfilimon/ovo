@@ -121,8 +121,7 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
                 try ctx.stdout.dim(" ({d}KB)\n", .{size / 1024});
 
                 if (!dry_run) {
-                    // Would actually delete here
-                    // ctx.cwd.deleteTree(dir) catch {};
+                    ctx.cwd.deleteTree(dir) catch {};
                 }
 
                 total_cleaned += size;
@@ -151,7 +150,7 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
             try ctx.stdout.dim(" ({d}KB)\n", .{size / 1024});
 
             if (!dry_run) {
-                // Would actually delete here
+                ctx.cwd.deleteTree(dir) catch {};
             }
 
             total_cleaned += size;
@@ -179,7 +178,7 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
             try ctx.stdout.dim(" ({d}KB)\n", .{size / 1024});
 
             if (!dry_run) {
-                // Would actually delete here
+                ctx.cwd.deleteTree(dir) catch {};
             }
 
             total_cleaned += size;
@@ -203,10 +202,60 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
     return 0;
 }
 
-fn getDirSize(ctx: *Context, path: []const u8) u64 {
-    // Simplified size calculation (in real impl would walk directory)
-    _ = ctx;
-    _ = path;
-    // Return simulated size
-    return 1024 * 1024; // 1MB placeholder
+fn getDirSize(_: *Context, path: []const u8) u64 {
+    return getDirSizeRecursive(path);
+}
+
+const SEEK_END: c_int = 2;
+const SEEK_SET: c_int = 0;
+extern "c" fn fseek(stream: *std.c.FILE, offset: c_long, whence: c_int) c_int;
+extern "c" fn ftell(stream: *std.c.FILE) c_long;
+
+fn getFileSize(file_path: []const u8) u64 {
+    var path_buf: [4096]u8 = undefined;
+    if (file_path.len >= path_buf.len) return 0;
+    @memcpy(path_buf[0..file_path.len], file_path);
+    path_buf[file_path.len] = 0;
+    const f = std.c.fopen(@ptrCast(&path_buf), "r") orelse return 0;
+    defer _ = std.c.fclose(f);
+    _ = fseek(f, 0, SEEK_END);
+    const size = ftell(f);
+    if (size < 0) return 0;
+    return @intCast(size);
+}
+
+fn getDirentName(entry: *const std.c.dirent) [*:0]const u8 {
+    return @ptrCast(&entry.name);
+}
+
+fn getDirSizeRecursive(path: []const u8) u64 {
+    var path_buf: [4096]u8 = undefined;
+    if (path.len >= path_buf.len) return 0;
+    @memcpy(path_buf[0..path.len], path);
+    path_buf[path.len] = 0;
+
+    const dir = std.c.opendir(@ptrCast(&path_buf)) orelse return 0;
+    defer _ = std.c.closedir(dir);
+
+    var total: u64 = 0;
+    while (std.c.readdir(dir)) |entry| {
+        const name = std.mem.span(getDirentName(entry));
+        if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) continue;
+
+        var child_buf: [4096]u8 = undefined;
+        if (path.len + 1 + name.len >= child_buf.len) continue;
+        @memcpy(child_buf[0..path.len], path);
+        child_buf[path.len] = '/';
+        @memcpy(child_buf[path.len + 1 ..][0..name.len], name);
+        child_buf[path.len + 1 + name.len] = 0;
+
+        const child_path = child_buf[0 .. path.len + 1 + name.len];
+
+        if (entry.type == std.c.DT.DIR) {
+            total += getDirSizeRecursive(child_path);
+        } else {
+            total += getFileSize(child_path);
+        }
+    }
+    return total;
 }
