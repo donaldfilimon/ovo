@@ -476,49 +476,35 @@ pub fn dispatch(allocator: std.mem.Allocator, args: []const []const u8) !u8 {
     }
 }
 
-fn dispatchCommand(command: []const u8, args: []const []const u8, ctx: *Context) !u8 {
-    if (std.mem.eql(u8, command, "build")) {
-        return build_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "run")) {
-        return run_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "test")) {
-        return test_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "new")) {
-        return new_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "init")) {
-        return init_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "add")) {
-        return add_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "remove")) {
-        return remove_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "fetch")) {
-        return fetch_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "clean")) {
-        return clean_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "install")) {
-        return install_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "import")) {
-        return import_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "export")) {
-        return export_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "info")) {
-        return info_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "deps")) {
-        return deps_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "fmt")) {
-        return fmt_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "lint")) {
-        return lint_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "doc")) {
-        return doc_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "doctor")) {
-        return doctor_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "update")) {
-        return update_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "lock")) {
-        return lock_cmd.execute(ctx, args);
-    }
+const CommandHandler = *const fn (*Context, []const []const u8) anyerror!u8;
 
+const command_dispatch = std.StaticStringMap(CommandHandler).initComptime(.{
+    .{ "build", build_cmd.execute },
+    .{ "run", run_cmd.execute },
+    .{ "test", test_cmd.execute },
+    .{ "new", new_cmd.execute },
+    .{ "init", init_cmd.execute },
+    .{ "add", add_cmd.execute },
+    .{ "remove", remove_cmd.execute },
+    .{ "fetch", fetch_cmd.execute },
+    .{ "clean", clean_cmd.execute },
+    .{ "install", install_cmd.execute },
+    .{ "import", import_cmd.execute },
+    .{ "export", export_cmd.execute },
+    .{ "info", info_cmd.execute },
+    .{ "deps", deps_cmd.execute },
+    .{ "fmt", fmt_cmd.execute },
+    .{ "lint", lint_cmd.execute },
+    .{ "doc", doc_cmd.execute },
+    .{ "doctor", doctor_cmd.execute },
+    .{ "update", update_cmd.execute },
+    .{ "lock", lock_cmd.execute },
+});
+
+fn dispatchCommand(command: []const u8, args: []const []const u8, ctx: *Context) !u8 {
+    if (command_dispatch.get(command)) |handler| {
+        return handler(ctx, args);
+    }
     return error.UnknownCommand;
 }
 

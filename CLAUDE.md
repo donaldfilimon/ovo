@@ -58,7 +58,7 @@ Modules are declared in `build.zig` with explicit import lists. Each module has 
 
 ### CLI Command Pattern
 
-- `src/cli/commands.zig` — dispatcher (`dispatch()` → `dispatchCommand()`), `Context`, `DirHandle`, `CFile`, `TermWriter`, shared helpers (`fileExistsC`, `findInPathC`, `hasHelpFlag`, `hasVerboseFlag`)
+- `src/cli/commands.zig` — dispatcher (`dispatch()` → `command_dispatch` StaticStringMap → handler), `Context`, `DirHandle`, `CFile`, `TermWriter`, shared helpers (`fileExistsC`, `findInPathC`, `hasHelpFlag`, `hasVerboseFlag`)
 - `src/cli/*_cmd.zig` — each command exports `pub fn execute(ctx: *Context, args: []const []const u8) !u8`
 - `src/cli/manifest.zig` — template handling: `getTemplateDir()`, `substituteInContent()`, `renderTemplate()`
 
