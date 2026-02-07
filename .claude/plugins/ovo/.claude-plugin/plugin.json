@@ -1,0 +1,10 @@
+{
+  "name": "ovo",
+  "version": "0.1.0",
+  "description": "OVO package manager development plugin — CLI patterns, Zig 0.16 conventions, Ralph improvement loop, and testing workflows",
+  "author": {
+    "name": "Donald Filimon"
+  },
+  "license": "MIT",
+  "keywords": ["ovo", "zig", "package-manager", "cli", "build-system"]
+}
