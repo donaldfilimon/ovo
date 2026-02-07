@@ -1,0 +1,40 @@
+---
+description: ZON build.zon and workspace.zon format for OVO
+globs: "**/*.zon"
+alwaysApply: false
+---
+
+# ZON Modular Syntax
+
+## Top-Level Order
+
+`name`, `version`, `targets`, `defaults`, `dependencies`, `tests`, `profiles`. Use `//` for section headers.
+
+## Targets (Map Format)
+
+Use `.@"name" = .{ ... }` for named targets.
+
+```zon
+.targets = .{
+    .@"{{PROJECT_NAME}}" = .{
+        .type = .executable,
+        .sources = .{"src/**/*.cpp"},
+        .include_dirs = .{"include"},
+        .flags = .{ .common = .{ "-Wall" }, .release = .{"-flto"} },
+    },
+},
+```
+
+## Nested Structs
+
+One field per line. Inline short arrays: `.common = .{ "-Wall", "-Wextra" }`.
+
+## Workspace
+
+- `.members` or `.member_patterns` for packages
+- `.shared` for common settings
+- `.workspace_dependencies` for shared deps
+
+## Templates
+
+Placeholders: `{{PROJECT_NAME}}`, `{{AUTHOR_NAME}}`, `{{AUTHOR_EMAIL}}`

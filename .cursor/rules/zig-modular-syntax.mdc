@@ -1,0 +1,42 @@
+---
+description: Zig modular syntax and structure for OVO
+globs: "**/*.zig"
+alwaysApply: false
+---
+
+# Zig Modular Syntax
+
+## Imports
+
+Group in order: `std`, then domain modules (`zon`, `build`, `cli`), then relative.
+
+```zig
+const std = @import("std");
+const commands = @import("commands.zig");
+const manifest = @import("manifest.zig");
+
+const Context = commands.Context;
+```
+
+## Module Layout
+
+1. `//!` module-level docs
+2. `const X = @import(...)` and type aliases
+3. `pub` types and functions
+4. `fn` private helpers
+
+## One Concern Per File
+
+- CLI: `*_cmd.zig` for commands
+- Parsers: `zon/` for ZON
+- Build: `build/` for engine, graph, scheduler
+
+## Allocator Discipline
+
+Pass `allocator` as first param; use `defer allocator.free()` for owned slices.
+
+## Naming
+
+- `snake_case` for identifiers
+- `PascalCase` for types
+- `_` prefix for intentionally unused params

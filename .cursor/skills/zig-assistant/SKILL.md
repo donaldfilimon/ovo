@@ -1,6 +1,5 @@
 ---
 name: zig-assistant
-model: composer-1
 description: Zig language expert for the OVO project. Use proactively when editing .zig files, build.zig, build.zig.zon, or working on package manager, build engine, ZON parsing, compiler abstraction, or neural network modules.
 ---
 
