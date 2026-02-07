@@ -5,6 +5,18 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const posix = std.posix;
+
+/// Get a handle to the current working directory.
+fn getCwd() std.Io.Dir {
+    return std.Io.Dir.cwd();
+}
+
+/// Get environment variable value.
+fn getenv(key: [*:0]const u8) ?[]const u8 {
+    const result = std.c.getenv(key) orelse return null;
+    return std.mem.span(result);
+}
 const interface = @import("interface.zig");
 const modules = @import("modules.zig");
 
@@ -167,7 +179,7 @@ pub const Clang = struct {
     pub fn compile(self: *Self, allocator: Allocator, options: CompileOptions) !CompileResult {
         const start_time = std.time.nanoTimestamp();
 
-        var args = std.ArrayList([]const u8).init(allocator);
+        var args = std.ArrayList([]const u8).empty;
         defer args.deinit();
 
         // Select compiler based on source type
@@ -344,7 +356,7 @@ pub const Clang = struct {
     pub fn link(self: *Self, allocator: Allocator, options: LinkOptions) !LinkResult {
         const start_time = std.time.nanoTimestamp();
 
-        var args = std.ArrayList([]const u8).init(allocator);
+        var args = std.ArrayList([]const u8).empty;
         defer args.deinit();
 
         // Use clang++ for linking to get C++ runtime
@@ -505,7 +517,7 @@ pub const Clang = struct {
     }
 
     fn scanWithClangScanDeps(self: *Self, allocator: Allocator, source_path: []const u8, options: CompileOptions) !ModuleDepsResult {
-        var args = std.ArrayList([]const u8).init(allocator);
+        var args = std.ArrayList([]const u8).empty;
         defer args.deinit();
 
         try args.append("clang-scan-deps");
@@ -553,7 +565,7 @@ pub const Clang = struct {
     fn scanFromSource(self: *Self, allocator: Allocator, source_path: []const u8) !ModuleDepsResult {
         _ = self;
 
-        const source = std.fs.cwd().readFileAlloc(allocator, source_path, 1024 * 1024 * 10) catch |err| {
+        const source = getCwd().readFileAlloc(allocator, source_path, 1024 * 1024 * 10) catch |err| {
             return .{
                 .success = false,
                 .dependencies = &.{},
@@ -583,7 +595,7 @@ pub const Clang = struct {
     pub fn compileModuleInterface(self: *Self, allocator: Allocator, source_path: []const u8, output_bmi: []const u8, options: CompileOptions) !CompileResult {
         const start_time = std.time.nanoTimestamp();
 
-        var args = std.ArrayList([]const u8).init(allocator);
+        var args = std.ArrayList([]const u8).empty;
         defer args.deinit();
 
         try args.append(self.clangxx_path);
@@ -686,14 +698,14 @@ pub const Clang = struct {
 fn findClang(allocator: Allocator) ![]const u8 {
     const names = [_][]const u8{ "clang-18", "clang-17", "clang-16", "clang-15", "clang" };
 
-    if (std.posix.getenv("PATH")) |path_env| {
+    if (getenv("PATH")) |path_env| {
         var paths = std.mem.splitScalar(u8, path_env, ':');
         while (paths.next()) |dir| {
             for (names) |name| {
                 const full_path = try std.fs.path.join(allocator, &.{ dir, name });
                 defer allocator.free(full_path);
 
-                if (std.fs.cwd().access(full_path, .{})) |_| {
+                if (getCwd().access(full_path, .{})) |_| {
                     return allocator.dupe(u8, full_path);
                 } else |_| {}
             }
@@ -707,14 +719,14 @@ fn findClang(allocator: Allocator) ![]const u8 {
 fn findClangxx(allocator: Allocator) ![]const u8 {
     const names = [_][]const u8{ "clang++-18", "clang++-17", "clang++-16", "clang++-15", "clang++" };
 
-    if (std.posix.getenv("PATH")) |path_env| {
+    if (getenv("PATH")) |path_env| {
         var paths = std.mem.splitScalar(u8, path_env, ':');
         while (paths.next()) |dir| {
             for (names) |name| {
                 const full_path = try std.fs.path.join(allocator, &.{ dir, name });
                 defer allocator.free(full_path);
 
-                if (std.fs.cwd().access(full_path, .{})) |_| {
+                if (getCwd().access(full_path, .{})) |_| {
                     return allocator.dupe(u8, full_path);
                 } else |_| {}
             }

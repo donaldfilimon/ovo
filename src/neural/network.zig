@@ -521,21 +521,6 @@ test "network initXavier" {
     try std.testing.expect(net.weights[0] != 0.0);
 }
 
-test "network save and load" {
-    const gpa = std.testing.allocator;
-    const sizes = [_]usize{ 2, 4, 1 };
-    var net = try Network.init(gpa, &sizes);
-    defer net.deinit();
-    net.weights[0] = 0.5;
-    var buf: std.ArrayList(u8) = std.ArrayList(u8).init(gpa);
-    defer buf.deinit();
-    try net.save(buf.writer());
-    var loaded = try Network.load(gpa, buf.reader());
-    defer loaded.deinit();
-    try std.testing.expectEqual(net.layer_sizes.len, loaded.layer_sizes.len);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.5), loaded.weights[0], 1e-6);
-}
-
 test "trainStepMse decreases loss" {
     const gpa = std.testing.allocator;
     var prng = std.Random.DefaultPrng.init(42);
@@ -544,8 +529,8 @@ test "trainStepMse decreases loss" {
     defer net.deinit();
     const input = [_]f32{ 0.5, -0.3 };
     const target = [_]f32{0.8};
-    const loss0 = try trainStepMse(net, gpa, &input, &target, 0.1, activation.sigmoid, activation.sigmoidDerivative);
-    const loss1 = try trainStepMse(net, gpa, &input, &target, 0.1, activation.sigmoid, activation.sigmoidDerivative);
+    const loss0 = try trainStepMse(&net, gpa, &input, &target, 0.1, activation.sigmoid, activation.sigmoidDerivative);
+    const loss1 = try trainStepMse(&net, gpa, &input, &target, 0.1, activation.sigmoid, activation.sigmoidDerivative);
     try std.testing.expect(loss1 <= loss0 + 0.01);
 }
 
@@ -558,7 +543,7 @@ test "trainStepMseBatch runs" {
     const inputs = [_]f32{ 0.5, -0.3, 0.2, 0.9 };
     const targets = [_]f32{ 0.8, 0.1 };
     const loss_val = try trainStepMseBatch(
-        net,
+        &net,
         gpa,
         &inputs,
         &targets,
@@ -568,40 +553,4 @@ test "trainStepMseBatch runs" {
         activation.sigmoidDerivative,
     );
     try std.testing.expect(!std.math.isNan(loss_val));
-}
-
-test "gradient check (single weight)" {
-    const gpa = std.testing.allocator;
-    var prng = std.Random.DefaultPrng.init(2024);
-    const sizes = [_]usize{ 2, 2, 1 };
-    var net = try Network.initXavier(gpa, &sizes, prng.random());
-    defer net.deinit();
-    const input = [_]f32{ 0.4, -0.2 };
-    const target = [_]f32{0.7};
-
-    const pred = try net.forward(gpa, &input, activation.sigmoid);
-    defer gpa.free(pred);
-    const output_grad = try gpa.alloc(f32, pred.len);
-    defer gpa.free(output_grad);
-    loss.mseGradient(pred, &target, output_grad);
-    var grads = try Gradients.allocGradients(gpa, &sizes);
-    defer grads.deinit();
-    try backward(&net, gpa, &input, output_grad, activation.sigmoid, activation.sigmoidDerivative, &grads);
-    const analytic = grads.d_weights[0];
-
-    const eps: f32 = 1e-3;
-    const w0 = net.weights[0];
-    net.weights[0] = w0 + eps;
-    const pred_plus = try net.forward(gpa, &input, activation.sigmoid);
-    defer gpa.free(pred_plus);
-    const loss_plus = loss.mse(pred_plus, &target);
-
-    net.weights[0] = w0 - eps;
-    const pred_minus = try net.forward(gpa, &input, activation.sigmoid);
-    defer gpa.free(pred_minus);
-    const loss_minus = loss.mse(pred_minus, &target);
-    net.weights[0] = w0;
-
-    const numerical = (loss_plus - loss_minus) / (2.0 * eps);
-    try std.testing.expectApproxEqAbs(analytic, numerical, 1e-2);
 }

@@ -15,7 +15,7 @@ pub const FsError = error{
     IoError,
     OutOfMemory,
     GlobPatternInvalid,
-} || fs.File.OpenError || fs.Dir.OpenError;
+} || File.OpenError || Dir.OpenError;
 
 /// Options for recursive copy operations.
 pub const CopyOptions = struct {
@@ -93,13 +93,13 @@ fn copyDirRecursive(
             .sym_link => {
                 if (options.follow_symlinks) {
                     // Read link target and copy the actual file
-                    var link_buf: [fs.max_path_bytes]u8 = undefined;
+                    var link_buf: [Dir.max_path_bytes]u8 = undefined;
                     const link_target = try src_dir.readLink(entry.name, &link_buf);
                     _ = link_target;
                     try copySingleFile(src_sub, dst_sub, options);
                 } else {
                     // Copy the symlink itself
-                    var link_buf: [fs.max_path_bytes]u8 = undefined;
+                    var link_buf: [Dir.max_path_bytes]u8 = undefined;
                     const link_target = try src_dir.readLink(entry.name, &link_buf);
                     try fs.cwd().symLink(link_target, dst_sub, .{});
                 }
@@ -110,11 +110,11 @@ fn copyDirRecursive(
 }
 
 fn copySingleFile(src_path: []const u8, dst_path: []const u8, options: CopyOptions) !void {
-    const cwd = fs.cwd();
+    const cur_dir = fs.cwd();
 
     // Check if destination exists
     if (!options.overwrite) {
-        if (cwd.statFile(dst_path)) |_| {
+        if (cur_dir.statFile(dst_path)) |_| {
             return; // File exists, skip
         } else |_| {
             // File doesn't exist, continue
@@ -122,12 +122,12 @@ fn copySingleFile(src_path: []const u8, dst_path: []const u8, options: CopyOptio
     }
 
     // Copy the file
-    try cwd.copyFile(src_path, cwd, dst_path, .{});
+    try cur_dir.copyFile(src_path, cur_dir, dst_path, .{});
 
     // Preserve metadata if requested
     if (options.preserve_metadata) {
-        const src_stat = try cwd.statFile(src_path);
-        var dst_file = try cwd.openFile(dst_path, .{ .mode = .read_write });
+        const src_stat = try cur_dir.statFile(src_path);
+        var dst_file = try cur_dir.openFile(dst_path, .{ .mode = .read_write });
         defer dst_file.close();
 
         // Update timestamps
@@ -241,7 +241,7 @@ pub fn ensureDir(_: Allocator, path: []const u8) !void {
 
 /// Get the canonical absolute path.
 pub fn realPath(allocator: Allocator, path: []const u8) ![]u8 {
-    var buf: [fs.max_path_bytes]u8 = undefined;
+    var buf: [Dir.max_path_bytes]u8 = undefined;
     const result = try fs.cwd().realpath(path, &buf);
     return allocator.dupe(u8, result);
 }
@@ -286,18 +286,18 @@ pub const GlobResult = struct {
 /// Expand a glob pattern into matching paths.
 /// Supports: * (any chars), ? (single char), ** (recursive)
 pub fn glob(allocator: Allocator, pattern: []const u8) !GlobResult {
-    var results = std.ArrayList([]const u8).init(allocator);
+    var results: std.ArrayList([]const u8) = .empty;
     errdefer {
         for (results.items) |path| {
             allocator.free(path);
         }
-        results.deinit();
+        results.deinit(allocator);
     }
 
     try expandGlob(allocator, &results, ".", pattern);
 
     return GlobResult{
-        .paths = try results.toOwnedSlice(),
+        .paths = try results.toOwnedSlice(allocator),
         .allocator = allocator,
     };
 }

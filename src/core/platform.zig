@@ -392,8 +392,7 @@ pub const Platform = struct {
     /// Writes the triplet to a fixed buffer (no allocation).
     /// Returns the slice of the buffer that was written to.
     pub fn tripletBuf(self: Self, buf: []u8) []u8 {
-        var fbs = std.io.fixedBufferStream(buf);
-        const writer = fbs.writer();
+        var writer = std.Io.Writer.fixed(buf);
 
         writer.print("{s}-{s}-{s}", .{
             self.arch.toString(),
@@ -405,7 +404,7 @@ pub const Platform = struct {
             writer.print("-{s}", .{abi_str}) catch {};
         }
 
-        return fbs.getWritten();
+        return buf[0..writer.end];
     }
 
     /// Returns true if this platform matches the native platform.

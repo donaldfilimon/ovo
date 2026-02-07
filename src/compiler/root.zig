@@ -155,7 +155,7 @@ pub fn build(
 
     // If we got an object file, link it
     if (compile_result.output_path) |obj_path| {
-        var link_result = try compiler_.link(allocator, .{
+        const link_result = try compiler_.link(allocator, .{
             .objects = &.{obj_path},
             .output = output,
             .library_dirs = options.library_dirs,

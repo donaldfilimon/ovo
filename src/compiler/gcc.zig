@@ -175,7 +175,7 @@ pub const GCC = struct {
     pub fn compile(self: *Self, allocator: Allocator, options: CompileOptions) !CompileResult {
         const start_time = std.time.nanoTimestamp();
 
-        var args = std.ArrayList([]const u8).init(allocator);
+        var args = std.ArrayList([]const u8).empty;
         defer args.deinit();
 
         // Select compiler
@@ -342,7 +342,7 @@ pub const GCC = struct {
     pub fn link(self: *Self, allocator: Allocator, options: LinkOptions) !LinkResult {
         const start_time = std.time.nanoTimestamp();
 
-        var args = std.ArrayList([]const u8).init(allocator);
+        var args = std.ArrayList([]const u8).empty;
         defer args.deinit();
 
         // Use g++ for linking (for C++ runtime)
@@ -470,7 +470,7 @@ pub const GCC = struct {
     }
 
     fn scanWithGCCDepOutput(self: *Self, allocator: Allocator, source_path: []const u8, options: CompileOptions) !ModuleDepsResult {
-        var args = std.ArrayList([]const u8).init(allocator);
+        var args = std.ArrayList([]const u8).empty;
         defer args.deinit();
 
         try args.append(self.gxx_path);
@@ -566,7 +566,7 @@ pub const GCC = struct {
     pub fn compileModuleInterface(self: *Self, allocator: Allocator, source_path: []const u8, output_bmi: []const u8, options: CompileOptions) !CompileResult {
         const start_time = std.time.nanoTimestamp();
 
-        var args = std.ArrayList([]const u8).init(allocator);
+        var args = std.ArrayList([]const u8).empty;
         defer args.deinit();
 
         try args.append(self.gxx_path);

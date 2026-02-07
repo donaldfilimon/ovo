@@ -241,10 +241,27 @@ pub const ArtifactRegistry = struct {
         for (subdirs) |subdir| {
             const path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ self.output_dir, subdir });
             defer self.allocator.free(path);
-            std.fs.cwd().makePath(path) catch |err| switch (err) {
-                error.PathAlreadyExists => {},
-                else => return err,
-            };
+            // Use C library for directory creation (Zig 0.16 compatibility)
+            ensureDirC(path);
+        }
+    }
+
+    fn ensureDirC(path: []const u8) void {
+        var path_buf: [4096]u8 = undefined;
+        var i: usize = 0;
+        while (i < path.len) {
+            while (i < path.len and path[i] != '/') i += 1;
+            if (i > 0) {
+                @memcpy(path_buf[0..i], path[0..i]);
+                path_buf[i] = 0;
+                _ = std.c.mkdir(@ptrCast(&path_buf), 0o755);
+            }
+            i += 1;
+        }
+        if (path.len > 0) {
+            @memcpy(path_buf[0..path.len], path);
+            path_buf[path.len] = 0;
+            _ = std.c.mkdir(@ptrCast(&path_buf), 0o755);
         }
     }
 
@@ -263,10 +280,13 @@ pub const ArtifactRegistry = struct {
         var it = self.artifacts.valueIterator();
         while (it.next()) |artifact| {
             if (artifact.output_path.len > 0) {
-                std.fs.cwd().deleteFile(artifact.output_path) catch |err| switch (err) {
-                    error.FileNotFound => {},
-                    else => return err,
-                };
+                // Use C library for file deletion (Zig 0.16 compatibility)
+                var path_buf: [4096]u8 = undefined;
+                if (artifact.output_path.len < path_buf.len) {
+                    @memcpy(path_buf[0..artifact.output_path.len], artifact.output_path);
+                    path_buf[artifact.output_path.len] = 0;
+                    _ = std.c.unlink(@ptrCast(&path_buf));
+                }
             }
             artifact.invalidate();
         }

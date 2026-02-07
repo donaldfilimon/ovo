@@ -324,7 +324,7 @@ pub fn parseDependencyString(allocator: Allocator, spec: []const u8) !Dependency
     if (std.mem.startsWith(u8, spec, "vcpkg:")) {
         const rest = spec[6..];
         var name = rest;
-        var features = std.ArrayList([]const u8).init(allocator);
+        var features: std.ArrayList([]const u8) = .empty;
 
         if (std.mem.indexOf(u8, rest, "[")) |bracket_pos| {
             name = rest[0..bracket_pos];
@@ -332,7 +332,7 @@ pub fn parseDependencyString(allocator: Allocator, spec: []const u8) !Dependency
                 const features_str = rest[bracket_pos + 1 .. end_bracket];
                 var feat_iter = std.mem.splitScalar(u8, features_str, ',');
                 while (feat_iter.next()) |feat| {
-                    try features.append(try allocator.dupe(u8, feat));
+                    try features.append(allocator, try allocator.dupe(u8, feat));
                 }
             }
         }
@@ -343,7 +343,7 @@ pub fn parseDependencyString(allocator: Allocator, spec: []const u8) !Dependency
             .source = .{
                 .vcpkg = .{
                     .name = try allocator.dupe(u8, name),
-                    .features = try features.toOwnedSlice(),
+                    .features = try features.toOwnedSlice(allocator),
                 },
             },
         };

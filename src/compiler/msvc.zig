@@ -180,7 +180,7 @@ pub const MSVC = struct {
     pub fn compile(self: *Self, allocator: Allocator, options: CompileOptions) !CompileResult {
         const start_time = std.time.nanoTimestamp();
 
-        var args = std.ArrayList([]const u8).init(allocator);
+        var args = std.ArrayList([]const u8).empty;
         defer args.deinit();
 
         try args.append(self.cl_path);
@@ -341,7 +341,7 @@ pub const MSVC = struct {
     pub fn link(self: *Self, allocator: Allocator, options: LinkOptions) !LinkResult {
         const start_time = std.time.nanoTimestamp();
 
-        var args = std.ArrayList([]const u8).init(allocator);
+        var args = std.ArrayList([]const u8).empty;
         defer args.deinit();
 
         // Use lib.exe for static libraries, link.exe otherwise
@@ -457,7 +457,7 @@ pub const MSVC = struct {
     }
 
     fn scanWithMSVC(self: *Self, allocator: Allocator, source_path: []const u8, options: CompileOptions) !ModuleDepsResult {
-        var args = std.ArrayList([]const u8).init(allocator);
+        var args = std.ArrayList([]const u8).empty;
         defer args.deinit();
 
         try args.append(self.cl_path);
@@ -551,7 +551,7 @@ pub const MSVC = struct {
     pub fn compileModuleInterface(self: *Self, allocator: Allocator, source_path: []const u8, output_bmi: []const u8, options: CompileOptions) !CompileResult {
         const start_time = std.time.nanoTimestamp();
 
-        var args = std.ArrayList([]const u8).init(allocator);
+        var args = std.ArrayList([]const u8).empty;
         defer args.deinit();
 
         try args.append(self.cl_path);

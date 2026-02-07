@@ -9,7 +9,7 @@ const std = @import("std");
 
 // Main translation engine
 pub const engine = @import("engine.zig");
-pub const TranslationEngine = engine.TranslationEngine;
+pub const TranslationEngine = engine.Engine;
 pub const TranslationOptions = engine.TranslationOptions;
 pub const BuildFormat = engine.BuildFormat;
 

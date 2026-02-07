@@ -103,8 +103,7 @@ pub const Define = struct {
 
     /// Returns the compiler flag for this define.
     pub fn toFlag(self: Self, buf: []u8, is_msvc: bool) []u8 {
-        var fbs = std.io.fixedBufferStream(buf);
-        const writer = fbs.writer();
+        var writer = std.Io.Writer.fixed(buf);
 
         const prefix = if (is_msvc) "/D" else "-D";
         if (self.value) |val| {
@@ -113,7 +112,7 @@ pub const Define = struct {
             writer.print("{s}{s}", .{ prefix, self.name }) catch {};
         }
 
-        return fbs.getWritten();
+        return buf[0..writer.end];
     }
 };
 
@@ -139,8 +138,7 @@ pub const IncludeDir = struct {
 
     /// Returns the compiler flag for this include directory.
     pub fn toFlag(self: Self, buf: []u8, is_msvc: bool) []u8 {
-        var fbs = std.io.fixedBufferStream(buf);
-        const writer = fbs.writer();
+        var writer = std.Io.Writer.fixed(buf);
 
         if (is_msvc) {
             if (self.system) {
@@ -156,7 +154,7 @@ pub const IncludeDir = struct {
             }
         }
 
-        return fbs.getWritten();
+        return buf[0..writer.end];
     }
 };
 
@@ -177,8 +175,7 @@ pub const LinkLibrary = struct {
 
     /// Returns the linker flag for this library.
     pub fn toFlag(self: Self, buf: []u8, os: Os, is_msvc: bool) []u8 {
-        var fbs = std.io.fixedBufferStream(buf);
-        const writer = fbs.writer();
+        var writer = std.Io.Writer.fixed(buf);
 
         if (self.path) |p| {
             writer.writeAll(p) catch {};
@@ -190,7 +187,7 @@ pub const LinkLibrary = struct {
             writer.print("-l{s}", .{self.name}) catch {};
         }
 
-        return fbs.getWritten();
+        return buf[0..writer.end];
     }
 };
 

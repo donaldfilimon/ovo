@@ -6,13 +6,20 @@
 const std = @import("std");
 const commands = @import("commands.zig");
 
-// C library functions for compilation
-extern "c" fn system(command: [*:0]const u8) c_int;
+// Module imports
+const zon = @import("zon");
+const build_mod = @import("build");
+const util = @import("util");
+
+const zon_parser = zon.parser;
+const schema = zon.schema;
+const engine = build_mod.engine;
+const artifacts = build_mod.artifacts;
+const glob = util.glob;
 
 const Context = commands.Context;
 const TermWriter = commands.TermWriter;
 const ProgressBar = commands.ProgressBar;
-const Color = commands.Color;
 
 /// Build configuration options
 pub const BuildOptions = struct {
@@ -110,6 +117,203 @@ fn parseOptions(args: []const []const u8) BuildOptions {
     return opts;
 }
 
+/// Convert schema TargetType to engine ArtifactKind
+fn toArtifactKind(target_type: schema.TargetType) artifacts.ArtifactKind {
+    return switch (target_type) {
+        .executable => .executable,
+        .static_library => .static_library,
+        .shared_library => .shared_library,
+        .object => .object,
+        .header_only => .object, // Header-only doesn't produce artifacts
+    };
+}
+
+/// Resolve source files from glob patterns
+fn resolveSourceFiles(
+    allocator: std.mem.Allocator,
+    sources: []const schema.SourceSpec,
+) ![]engine.SourceFile {
+    var result: std.ArrayList(engine.SourceFile) = .{};
+    errdefer result.deinit(allocator);
+
+    for (sources) |source_spec| {
+        // Check if it's a glob pattern or literal path
+        if (glob.isGlobPattern(source_spec.pattern)) {
+            // Walk directory and match patterns
+            const matched = try walkAndMatch(allocator, source_spec.pattern);
+            defer allocator.free(matched);
+
+            for (matched) |path| {
+                const ext = std.fs.path.extension(path);
+                const kind = engine.SourceFile.SourceKind.fromExtension(ext) orelse continue;
+                if (kind == .header) continue; // Skip headers in source list
+
+                try result.append(allocator, .{
+                    .path = try allocator.dupe(u8, path),
+                    .kind = kind,
+                    .module_name = null,
+                    .imports = &.{},
+                });
+            }
+        } else {
+            // Literal path
+            const ext = std.fs.path.extension(source_spec.pattern);
+            const kind = engine.SourceFile.SourceKind.fromExtension(ext) orelse continue;
+            if (kind == .header) continue;
+
+            try result.append(allocator, .{
+                .path = try allocator.dupe(u8, source_spec.pattern),
+                .kind = kind,
+                .module_name = null,
+                .imports = &.{},
+            });
+        }
+    }
+
+    return result.toOwnedSlice(allocator);
+}
+
+/// Walk directory tree and find files matching pattern
+fn walkAndMatch(
+    allocator: std.mem.Allocator,
+    pattern: []const u8,
+) ![][]const u8 {
+    var results: std.ArrayList([]const u8) = .{};
+    errdefer {
+        for (results.items) |item| allocator.free(item);
+        results.deinit(allocator);
+    }
+
+    // For now, just return the literal pattern if not a complex glob
+    // Full directory walking requires std.fs APIs which changed in 0.16
+    // A proper implementation should use the C library or Zig's new Io APIs
+
+    // If the pattern contains **, try common source directories
+    if (std.mem.indexOf(u8, pattern, "**") != null) {
+        // Extract the file extension pattern (e.g., "*.cpp" from "**/*.cpp")
+        const ext_start = std.mem.lastIndexOfScalar(u8, pattern, '*') orelse 0;
+        const ext_pattern = pattern[ext_start..];
+
+        // Check common source file locations
+        const common_paths = [_][]const u8{
+            "src/main.c",
+            "src/main.cpp",
+            "src/lib.c",
+            "src/lib.cpp",
+            "main.c",
+            "main.cpp",
+            "lib.c",
+            "lib.cpp",
+        };
+
+        for (common_paths) |path| {
+            // Check if file matches extension pattern
+            if (glob.match(ext_pattern, std.fs.path.basename(path))) {
+                // Check if file exists using C library
+                if (fileExists(path)) {
+                    try results.append(allocator, try allocator.dupe(u8, path));
+                }
+            }
+        }
+    } else {
+        // Literal path - just check if it exists
+        if (fileExists(pattern)) {
+            try results.append(allocator, try allocator.dupe(u8, pattern));
+        }
+    }
+
+    return results.toOwnedSlice(allocator);
+}
+
+fn fileExists(path: []const u8) bool {
+    var path_buf: [4096]u8 = undefined;
+    if (path.len >= path_buf.len) return false;
+    @memcpy(path_buf[0..path.len], path);
+    path_buf[path.len] = 0;
+    return std.c.access(@ptrCast(&path_buf), std.c.F_OK) == 0;
+}
+
+
+/// Convert project target to build engine target
+fn convertTarget(
+    allocator: std.mem.Allocator,
+    project_target: *const schema.Target,
+    project: *const schema.Project,
+) !engine.BuildTarget {
+    var build_target = try engine.BuildTarget.init(
+        allocator,
+        project_target.name,
+        toArtifactKind(project_target.target_type),
+    );
+    errdefer build_target.deinit();
+
+    // Resolve source files
+    const sources = try resolveSourceFiles(allocator, project_target.sources);
+    build_target.sources = sources;
+
+    // Include paths
+    var includes: std.ArrayList([]const u8) = .{};
+    if (project_target.includes) |incs| {
+        for (incs) |inc| {
+            try includes.append(allocator, inc.path);
+        }
+    }
+    // Add default include directories if they exist
+    if (fileExists("include")) {
+        try includes.append(allocator, "include");
+    }
+    build_target.include_paths = try includes.toOwnedSlice(allocator);
+
+    // Defines
+    var defines: std.ArrayList([]const u8) = .{};
+    if (project_target.defines) |defs| {
+        for (defs) |def| {
+            if (def.value) |val| {
+                const define_str = try std.fmt.allocPrint(allocator, "{s}={s}", .{ def.name, val });
+                try defines.append(allocator, define_str);
+            } else {
+                try defines.append(allocator, try allocator.dupe(u8, def.name));
+            }
+        }
+    }
+    build_target.defines = try defines.toOwnedSlice(allocator);
+
+    // Compiler flags
+    var flags: std.ArrayList([]const u8) = .{};
+
+    // Add C/C++ standard flag
+    const cpp_std = project_target.cpp_standard orelse
+        (if (project.defaults) |d| d.cpp_standard else null);
+    const c_std = project_target.c_standard orelse
+        (if (project.defaults) |d| d.c_standard else null);
+
+    if (cpp_std) |std_ver| {
+        const flag = try std.fmt.allocPrint(allocator, "-std={s}", .{std_ver.toString()});
+        try flags.append(allocator, flag);
+    } else if (c_std) |std_ver| {
+        const flag = try std.fmt.allocPrint(allocator, "-std={s}", .{std_ver.toString()});
+        try flags.append(allocator, flag);
+    }
+
+    // Add target-specific flags
+    if (project_target.flags) |target_flags| {
+        for (target_flags) |f| {
+            if (!f.link_only) {
+                try flags.append(allocator, f.flag);
+            }
+        }
+    }
+
+    build_target.compiler_flags = try flags.toOwnedSlice(allocator);
+
+    // Link libraries
+    if (project_target.link_libraries) |libs| {
+        build_target.libraries = libs;
+    }
+
+    return build_target;
+}
+
 /// Execute the build command
 pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
     // Check for help flag
@@ -133,11 +337,26 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
         return 1;
     }
 
+    // Parse build.zon
+    try ctx.stdout.print("  ", .{});
+    try ctx.stdout.success("*", .{});
+    try ctx.stdout.print(" Parsing build.zon...\n", .{});
+
+    var project = zon_parser.parseFile(ctx.allocator, "build.zon") catch |err| {
+        try ctx.stderr.err("error: ", .{});
+        try ctx.stderr.print("failed to parse build.zon: {}\n", .{err});
+        return 1;
+    };
+    defer project.deinit(ctx.allocator);
+
     // Print build configuration
     try ctx.stdout.bold("Building", .{});
-    if (opts.target) |t| {
-        try ctx.stdout.print(" target '{s}'", .{t});
-    }
+    try ctx.stdout.print(" project '{s}' v{d}.{d}.{d}", .{
+        project.name,
+        project.version.major,
+        project.version.minor,
+        project.version.patch,
+    });
     if (opts.release) {
         try ctx.stdout.success(" [release]", .{});
     } else {
@@ -155,96 +374,126 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
         if (opts.jobs) |j| {
             try ctx.stdout.dim("  Jobs:     {d}\n", .{j});
         }
+        try ctx.stdout.dim("  Targets:  {d}\n", .{project.targets.len});
     }
+
+    // Configure build engine
+    const profile: engine.BuildProfile = if (opts.release) .release else .debug;
+
+    var cross_target: ?engine.CrossTarget = null;
+    if (opts.cross_target) |ct| {
+        // Parse cross target string (e.g., "aarch64-linux-gnu")
+        var parts = std.mem.splitScalar(u8, ct, '-');
+        const arch = parts.next() orelse ct;
+        const os = parts.next() orelse "linux";
+        const abi = parts.next();
+
+        cross_target = .{
+            .arch = arch,
+            .os = os,
+            .abi = abi,
+            .cpu_features = null,
+        };
+    }
+
+    // Determine compiler
+    const cc: []const u8 = opts.compiler orelse "cc";
+    const cxx: []const u8 = if (opts.compiler) |c|
+        if (std.mem.eql(u8, c, "gcc")) "g++" else if (std.mem.eql(u8, c, "clang")) "clang++" else "c++"
+    else
+        "c++";
+
+    var build_engine = try engine.BuildEngine.init(ctx.allocator, .{
+        .profile = profile,
+        .cross_target = cross_target,
+        .max_jobs = opts.jobs orelse 0,
+        .output_dir = "build",
+        .cache_dir = ".ovo-cache",
+        .verbose = opts.verbose,
+        .cc = cc,
+        .cxx = cxx,
+    });
+    defer build_engine.deinit();
 
     // Clean if requested
     if (opts.clean_first) {
         try ctx.stdout.info("Cleaning build artifacts...\n", .{});
-        // Would invoke clean logic here
+        try build_engine.clean();
     }
 
-    // Try to actually compile using system()
+    // Convert project targets to build engine targets
     try ctx.stdout.print("  ", .{});
     try ctx.stdout.success("*", .{});
-    try ctx.stdout.print(" Detecting sources...\n", .{});
+    try ctx.stdout.print(" Resolving targets...\n", .{});
 
-    // Determine source file and language
-    var source: ?[]const u8 = null;
-    var is_cpp = false;
+    var targets_to_build: std.ArrayList([]const u8) = .{};
+    defer targets_to_build.deinit(ctx.allocator);
 
-    // Check for source files using C library access()
-    const patterns = [_]struct { path: [*:0]const u8, cpp: bool }{
-        .{ .path = "main.cpp", .cpp = true },
-        .{ .path = "main.c", .cpp = false },
-        .{ .path = "src/main.cpp", .cpp = true },
-        .{ .path = "src/main.c", .cpp = false },
-    };
+    for (project.targets) |*target| {
+        // Skip if specific target requested and this isn't it
+        if (opts.target) |requested| {
+            if (!std.mem.eql(u8, target.name, requested)) continue;
+        }
 
-    for (patterns) |p| {
-        if (std.c.access(p.path, std.c.F_OK) == 0) {
-            source = std.mem.span(p.path);
-            is_cpp = p.cpp;
-            break;
+        // Skip header-only targets
+        if (target.target_type == .header_only) continue;
+
+        const build_target = convertTarget(ctx.allocator, target, &project) catch |err| {
+            try ctx.stderr.warn("warning: ", .{});
+            try ctx.stderr.print("failed to configure target '{s}': {}\n", .{ target.name, err });
+            continue;
+        };
+
+        try build_engine.addTarget(build_target);
+        try targets_to_build.append(ctx.allocator, target.name);
+
+        if (opts.verbose) {
+            try ctx.stdout.dim("    + {s} ({s})\n", .{
+                target.name,
+                @tagName(target.target_type),
+            });
         }
     }
 
-    if (source == null) {
-        try ctx.stderr.err("error: ", .{});
-        try ctx.stderr.print("no source files found\n", .{});
-        return 1;
+    if (targets_to_build.items.len == 0) {
+        if (opts.target) |requested| {
+            try ctx.stderr.err("error: ", .{});
+            try ctx.stderr.print("target '{s}' not found in build.zon\n", .{requested});
+            return 1;
+        }
+        try ctx.stderr.warn("warning: ", .{});
+        try ctx.stderr.print("no buildable targets found\n", .{});
+        return 0;
     }
 
-    // Determine compiler and flags
-    const compiler: []const u8 = opts.compiler orelse if (is_cpp) "clang++" else "clang";
-    const std_flag: []const u8 = opts.std_version orelse if (is_cpp) "-std=c++17" else "-std=c11";
-    const out_dir: [*:0]const u8 = if (opts.release) "build/release" else "build/debug";
-    const out_dir_slice: []const u8 = std.mem.span(out_dir);
-    const opt_flag: []const u8 = if (opts.release) "-O2" else "-g";
-    const out_name = opts.target orelse "main";
-
-    // Create output directory
-    _ = std.c.mkdir("build", 0o755);
-    _ = std.c.mkdir(out_dir, 0o755);
-
+    // Execute build
     try ctx.stdout.print("  ", .{});
     try ctx.stdout.success("*", .{});
-    try ctx.stdout.print(" Compiling {s} with {s}...\n", .{ source.?, compiler });
+    try ctx.stdout.print(" Compiling {d} target(s)...\n", .{targets_to_build.items.len});
 
-    // Build command string
-    var cmd_buf: [512]u8 = undefined;
-    const cmd = std.fmt.bufPrint(&cmd_buf, "{s} {s} -o {s}/{s} {s} -Wall {s}", .{
-        compiler,
-        source.?,
-        out_dir_slice,
-        out_name,
-        std_flag,
-        opt_flag,
-    }) catch {
-        try ctx.stderr.err("error: ", .{});
-        try ctx.stderr.print("command too long\n", .{});
-        return 1;
-    };
+    const result = try build_engine.build(targets_to_build.items);
 
-    // Null-terminate for system()
-    cmd_buf[cmd.len] = 0;
-
-    if (opts.verbose) {
-        try ctx.stdout.dim("  Command: {s}\n", .{cmd});
-    }
-
-    // Execute using system()
-    const result = system(@ptrCast(&cmd_buf));
-
-    if (result != 0) {
-        try ctx.stderr.err("error: ", .{});
-        try ctx.stderr.print("compilation failed\n", .{});
-        return 1;
-    }
-
-    // Build summary
+    // Print results
     try ctx.stdout.print("\n", .{});
-    try ctx.stdout.success("Build completed successfully!\n", .{});
-    try ctx.stdout.dim("  Output: {s}/{s}\n", .{ out_dir_slice, out_name });
+
+    if (result.success) {
+        try ctx.stdout.success("Build completed successfully!\n", .{});
+        try ctx.stdout.dim("  Built:  {d} target(s)\n", .{result.targets_built});
+        try ctx.stdout.dim("  Cached: {d} target(s)\n", .{result.targets_cached});
+
+        const time_ms = result.total_time_ns / 1_000_000;
+        try ctx.stdout.dim("  Time:   {d}ms\n", .{time_ms});
+    } else {
+        try ctx.stderr.err("Build failed!\n", .{});
+        try ctx.stderr.print("  Built:  {d} target(s)\n", .{result.targets_built});
+        try ctx.stderr.print("  Failed: {d} target(s)\n", .{result.targets_failed});
+
+        for (result.error_messages) |msg| {
+            try ctx.stderr.print("  - {s}\n", .{msg});
+        }
+
+        return 1;
+    }
 
     return 0;
 }

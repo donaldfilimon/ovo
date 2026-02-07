@@ -9,14 +9,14 @@ pub fn build(b: *std.Build) void {
     // ═══════════════════════════════════════════════════════════════════
 
     // Utility module (no dependencies)
-    const util_mod = b.addModule("ovo_util", .{
+    const util_mod = b.addModule("util", .{
         .root_source_file = b.path("src/util/root.zig"),
         .target = target,
         .optimize = optimize,
     });
 
     // Core data structures module
-    const core_mod = b.addModule("ovo_core", .{
+    const core_mod = b.addModule("core", .{
         .root_source_file = b.path("src/core/root.zig"),
         .target = target,
         .optimize = optimize,
@@ -26,7 +26,7 @@ pub fn build(b: *std.Build) void {
     });
 
     // ZON parsing module
-    const zon_mod = b.addModule("ovo_zon", .{
+    const zon_mod = b.addModule("zon", .{
         .root_source_file = b.path("src/zon/root.zig"),
         .target = target,
         .optimize = optimize,
@@ -37,7 +37,7 @@ pub fn build(b: *std.Build) void {
     });
 
     // Compiler abstraction module
-    const compiler_mod = b.addModule("ovo_compiler", .{
+    const compiler_mod = b.addModule("compiler", .{
         .root_source_file = b.path("src/compiler/root.zig"),
         .target = target,
         .optimize = optimize,
@@ -48,7 +48,7 @@ pub fn build(b: *std.Build) void {
     });
 
     // Build engine module
-    const build_mod = b.addModule("ovo_build", .{
+    const build_mod = b.addModule("build", .{
         .root_source_file = b.path("src/build/root.zig"),
         .target = target,
         .optimize = optimize,
@@ -60,7 +60,7 @@ pub fn build(b: *std.Build) void {
     });
 
     // Package management module
-    const package_mod = b.addModule("ovo_package", .{
+    const package_mod = b.addModule("package", .{
         .root_source_file = b.path("src/package/root.zig"),
         .target = target,
         .optimize = optimize,
@@ -71,7 +71,7 @@ pub fn build(b: *std.Build) void {
     });
 
     // Translation module (importers/exporters)
-    const translate_mod = b.addModule("ovo_translate", .{
+    const translate_mod = b.addModule("translate", .{
         .root_source_file = b.path("src/translate/root.zig"),
         .target = target,
         .optimize = optimize,
@@ -83,7 +83,7 @@ pub fn build(b: *std.Build) void {
     });
 
     // CLI module
-    const cli_mod = b.addModule("ovo_cli", .{
+    const cli_mod = b.addModule("cli", .{
         .root_source_file = b.path("src/cli/root.zig"),
         .target = target,
         .optimize = optimize,
@@ -98,15 +98,7 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    // Neural network module (legacy, for backwards compatibility)
-    const neural_mod = b.addModule("ovo_neural", .{
-        .root_source_file = b.path("src/neural/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
     // Main public module (re-exports everything)
-    // Note: neural module is imported via file path in root.zig, not as a module dependency
     const ovo_mod = b.addModule("ovo", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -162,59 +154,78 @@ pub fn build(b: *std.Build) void {
     // ═══════════════════════════════════════════════════════════════════
 
     const test_step = b.step("test", "Run all tests");
-
-    // Test each module
-    const test_modules = [_]struct { name: []const u8, mod: *std.Build.Module }{
-        .{ .name = "util", .mod = util_mod },
-        .{ .name = "core", .mod = core_mod },
-        .{ .name = "zon", .mod = zon_mod },
-        .{ .name = "compiler", .mod = compiler_mod },
-        .{ .name = "build", .mod = build_mod },
-        .{ .name = "package", .mod = package_mod },
-        .{ .name = "translate", .mod = translate_mod },
-        .{ .name = "cli", .mod = cli_mod },
-        .{ .name = "neural", .mod = neural_mod },
-    };
-
-    for (test_modules) |tm| {
-        const mod_test = b.addTest(.{
-            .root_module = tm.mod,
-        });
-        const run_test = b.addRunArtifact(mod_test);
-        test_step.dependOn(&run_test.step);
-    }
-
-    // Main module tests
-    const main_tests = b.addTest(.{
-        .root_module = ovo_mod,
+    const unit_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "ovo", .module = ovo_mod },
+                .{ .name = "cli", .module = cli_mod },
+                .{ .name = "core", .module = core_mod },
+                .{ .name = "util", .module = util_mod },
+            },
+        }),
     });
-    const run_main_tests = b.addRunArtifact(main_tests);
-    test_step.dependOn(&run_main_tests.step);
+    unit_tests.root_module.addImport("ovo", ovo_mod);
+    unit_tests.root_module.addImport("cli", cli_mod);
+    unit_tests.root_module.addImport("core", core_mod);
+    unit_tests.root_module.addImport("util", util_mod);
+    unit_tests.root_module.addImport("zon", zon_mod);
+    unit_tests.root_module.addImport("build", build_mod);
+    unit_tests.root_module.addImport("compiler", compiler_mod);
+    unit_tests.root_module.addImport("package", package_mod);
+    unit_tests.root_module.addImport("translate", translate_mod);
+    test_step.dependOn(&unit_tests.step);
 
     // ═══════════════════════════════════════════════════════════════════
     // Documentation
     // ═══════════════════════════════════════════════════════════════════
 
-    const docs_step = b.step("docs", "Generate documentation");
-    const docs = b.addObject(.{
-        .name = "ovo",
-        .root_module = ovo_mod,
+    const doc_step = b.step("docs", "Generate documentation");
+    const doc_obj = b.addObject(.{
+        .name = "ovo_docs",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/root.zig"),
+            .target = target,
+            .optimize = .Debug,
+            .imports = &.{
+                .{ .name = "core", .module = core_mod },
+                .{ .name = "zon", .module = zon_mod },
+                .{ .name = "build", .module = build_mod },
+                .{ .name = "compiler", .module = compiler_mod },
+                .{ .name = "package", .module = package_mod },
+                .{ .name = "translate", .module = translate_mod },
+                .{ .name = "cli", .module = cli_mod },
+                .{ .name = "util", .module = util_mod },
+            },
+        }),
     });
-    const install_docs = docs.getEmittedDocs();
-    docs_step.dependOn(&b.addInstallDirectory(.{
-        .source_dir = install_docs,
+    const install_docs = b.addInstallDirectory(.{
+        .source_dir = doc_obj.getEmittedDocs(),
         .install_dir = .prefix,
         .install_subdir = "docs",
-    }).step);
-
-    // ═══════════════════════════════════════════════════════════════════
-    // Format check
-    // ═══════════════════════════════════════════════════════════════════
-
-    const fmt_step = b.step("fmt", "Check code formatting");
-    const fmt = b.addFmt(.{
-        .paths = &.{"src"},
-        .check = true,
     });
-    fmt_step.dependOn(&fmt.step);
+    doc_step.dependOn(&install_docs.step);
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Check step (for IDE integration)
+    // ═══════════════════════════════════════════════════════════════════
+
+    const check_step = b.step("check", "Check compilation without codegen");
+    const check_exe = b.addExecutable(.{
+        .name = "ovo_check",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "ovo", .module = ovo_mod },
+                .{ .name = "cli", .module = cli_mod },
+                .{ .name = "core", .module = core_mod },
+                .{ .name = "util", .module = util_mod },
+            },
+        }),
+    });
+    check_step.dependOn(&check_exe.step);
 }

@@ -23,6 +23,28 @@ pub fn leakyRelu(x: f32, slope: f32) f32 {
     return if (x >= 0.0) x else slope * x;
 }
 
+/// Leaky ReLU with default slope of 0.01.
+pub fn leakyReluDefault(x: f32) f32 {
+    return leakyRelu(x, 0.01);
+}
+
+/// ELU: x if x >= 0, else alpha * (exp(x) - 1). Suitable for hidden layers.
+pub fn elu(x: f32, alpha: f32) f32 {
+    return if (x >= 0.0) x else alpha * (std.math.exp(x) - 1.0);
+}
+
+/// ELU with default alpha of 1.0.
+pub fn eluDefault(x: f32) f32 {
+    return elu(x, 1.0);
+}
+
+/// GELU approximation: 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+pub fn gelu(x: f32) f32 {
+    const sqrt_2_over_pi: f32 = 0.7978845608;
+    const c: f32 = 0.044715;
+    return 0.5 * x * (1.0 + std.math.tanh(sqrt_2_over_pi * (x + c * x * x * x)));
+}
+
 /// Softmax over slice in-place. Caller provides buffer; suitable for output (multi-class).
 pub fn softmax(buf: []f32) void {
     if (buf.len == 0) return;
@@ -58,6 +80,26 @@ pub fn tanhDerivative(preactivation: f32) f32 {
 /// Leaky ReLU derivative: 1 if x >= 0 else slope.
 pub fn leakyReluDerivative(preactivation: f32, slope: f32) f32 {
     return if (preactivation >= 0.0) 1.0 else slope;
+}
+
+/// Leaky ReLU derivative with default slope of 0.01.
+pub fn leakyReluDerivativeDefault(preactivation: f32) f32 {
+    return leakyReluDerivative(preactivation, 0.01);
+}
+
+/// ELU derivative: 1 if x >= 0, else elu(x, alpha) + alpha.
+pub fn eluDerivative(preactivation: f32, alpha: f32) f32 {
+    return if (preactivation >= 0.0) 1.0 else elu(preactivation, alpha) + alpha;
+}
+
+/// Linear activation (identity). Useful for output layers in regression.
+pub fn linear(x: f32) f32 {
+    return x;
+}
+
+/// Linear derivative (always 1).
+pub fn linearDerivative(_: f32) f32 {
+    return 1.0;
 }
 
 test "sigmoid known values" {
@@ -100,4 +142,11 @@ test "sigmoid derivative" {
 test "relu derivative" {
     try std.testing.expectEqual(@as(f32, 1.0), reluDerivative(1.0));
     try std.testing.expectEqual(@as(f32, 0.0), reluDerivative(-1.0));
+}
+
+test "gelu approximation" {
+    // GELU(0) should be approximately 0
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), gelu(0.0), 1e-5);
+    // GELU for positive values should be close to linear
+    try std.testing.expect(gelu(2.0) > 1.9);
 }

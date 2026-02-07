@@ -285,8 +285,7 @@ pub const VersionConstraint = struct {
 
     /// Returns a string representation of the constraint.
     pub fn toString(self: Self, buf: []u8) []u8 {
-        var fbs = std.io.fixedBufferStream(buf);
-        const writer = fbs.writer();
+        var writer = std.Io.Writer.fixed(buf);
 
         if (self.exact) |v| {
             writer.print("={s}", .{v}) catch {};
@@ -300,7 +299,7 @@ pub const VersionConstraint = struct {
             writer.writeAll("*") catch {};
         }
 
-        return fbs.getWritten();
+        return buf[0..writer.end];
     }
 };
 

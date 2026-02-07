@@ -14,12 +14,109 @@ pub const TemplateKind = enum {
     c_header_only,
 };
 
-const template_cpp_exe = @embedFile("../../templates/cpp_exe/build.zon");
-const template_cpp_lib = @embedFile("../../templates/cpp_lib/build.zon");
-const template_c_exe = @embedFile("../../templates/c_project/build.zon");
-const template_cpp_header_only = @embedFile("../../templates/cpp_header_only/build.zon");
-const template_c_lib = @embedFile("../../templates/c_lib/build.zon");
-const template_c_header_only = @embedFile("../../templates/c_header_only/build.zon");
+// Inline templates for Zig 0.16 module compatibility
+const template_cpp_exe =
+    \\.{
+    \\    .name = "{{PROJECT_NAME}}",
+    \\    .version = .{ .major = 0, .minor = 1, .patch = 0 },
+    \\    .authors = .{"{{AUTHOR_NAME}} <{{AUTHOR_EMAIL}}>"},
+    \\    .license = "MIT",
+    \\    .targets = .{
+    \\        .{
+    \\            .name = "{{PROJECT_NAME}}",
+    \\            .target_type = .executable,
+    \\            .sources = .{.{ .pattern = "src/**/*.cpp" }},
+    \\        },
+    \\    },
+    \\    .defaults = .{
+    \\        .cpp_standard = .cpp20,
+    \\    },
+    \\}
+;
+const template_cpp_lib =
+    \\.{
+    \\    .name = "{{PROJECT_NAME}}",
+    \\    .version = .{ .major = 0, .minor = 1, .patch = 0 },
+    \\    .authors = .{"{{AUTHOR_NAME}} <{{AUTHOR_EMAIL}}>"},
+    \\    .license = "MIT",
+    \\    .targets = .{
+    \\        .{
+    \\            .name = "{{PROJECT_NAME}}",
+    \\            .target_type = .static_library,
+    \\            .sources = .{.{ .pattern = "src/**/*.cpp" }},
+    \\        },
+    \\    },
+    \\    .defaults = .{
+    \\        .cpp_standard = .cpp20,
+    \\    },
+    \\}
+;
+const template_c_exe =
+    \\.{
+    \\    .name = "{{PROJECT_NAME}}",
+    \\    .version = .{ .major = 0, .minor = 1, .patch = 0 },
+    \\    .authors = .{"{{AUTHOR_NAME}} <{{AUTHOR_EMAIL}}>"},
+    \\    .license = "MIT",
+    \\    .targets = .{
+    \\        .{
+    \\            .name = "{{PROJECT_NAME}}",
+    \\            .target_type = .executable,
+    \\            .sources = .{.{ .pattern = "src/**/*.c" }},
+    \\        },
+    \\    },
+    \\    .defaults = .{
+    \\        .c_standard = .c17,
+    \\    },
+    \\}
+;
+const template_cpp_header_only =
+    \\.{
+    \\    .name = "{{PROJECT_NAME}}",
+    \\    .version = .{ .major = 0, .minor = 1, .patch = 0 },
+    \\    .authors = .{"{{AUTHOR_NAME}} <{{AUTHOR_EMAIL}}>"},
+    \\    .license = "MIT",
+    \\    .targets = .{
+    \\        .{
+    \\            .name = "{{PROJECT_NAME}}",
+    \\            .target_type = .header_only,
+    \\            .includes = .{.{ .path = "include" }},
+    \\        },
+    \\    },
+    \\}
+;
+const template_c_lib =
+    \\.{
+    \\    .name = "{{PROJECT_NAME}}",
+    \\    .version = .{ .major = 0, .minor = 1, .patch = 0 },
+    \\    .authors = .{"{{AUTHOR_NAME}} <{{AUTHOR_EMAIL}}>"},
+    \\    .license = "MIT",
+    \\    .targets = .{
+    \\        .{
+    \\            .name = "{{PROJECT_NAME}}",
+    \\            .target_type = .static_library,
+    \\            .sources = .{.{ .pattern = "src/**/*.c" }},
+    \\        },
+    \\    },
+    \\    .defaults = .{
+    \\        .c_standard = .c17,
+    \\    },
+    \\}
+;
+const template_c_header_only =
+    \\.{
+    \\    .name = "{{PROJECT_NAME}}",
+    \\    .version = .{ .major = 0, .minor = 1, .patch = 0 },
+    \\    .authors = .{"{{AUTHOR_NAME}} <{{AUTHOR_EMAIL}}>"},
+    \\    .license = "MIT",
+    \\    .targets = .{
+    \\        .{
+    \\            .name = "{{PROJECT_NAME}}",
+    \\            .target_type = .header_only,
+    \\            .includes = .{.{ .path = "include" }},
+    \\        },
+    \\    },
+    \\}
+;
 
 pub fn templateForKind(kind: TemplateKind) []const u8 {
     return switch (kind) {
@@ -29,6 +126,32 @@ pub fn templateForKind(kind: TemplateKind) []const u8 {
         .c_exe => template_c_exe,
         .c_lib => template_c_lib,
         .c_header_only => template_c_header_only,
+    };
+}
+
+/// Return base template directory (OVO_TEMPLATES env or "templates").
+pub fn getTemplateDir(allocator: std.mem.Allocator) ![]const u8 {
+    const key = "OVO_TEMPLATES";
+    var key_buf: [32]u8 = undefined;
+    if (key.len >= key_buf.len) return allocator.dupe(u8, "templates");
+    @memcpy(key_buf[0..key.len], key);
+    key_buf[key.len] = 0;
+    if (std.c.getenv(@ptrCast(&key_buf))) |ptr| {
+        const val = std.mem.span(ptr);
+        if (val.len > 0) return allocator.dupe(u8, val);
+    }
+    return allocator.dupe(u8, "templates");
+}
+
+/// Return relative path for build.zon template (e.g. "cpp_exe/build.zon").
+pub fn getBuildZonTemplatePath(kind: TemplateKind, lang: []const u8) []const u8 {
+    return switch (kind) {
+        .cpp_exe => if (std.mem.eql(u8, lang, "cpp")) "cpp_exe/build.zon" else "c_project/build.zon",
+        .cpp_lib => if (std.mem.eql(u8, lang, "cpp")) "cpp_lib/build.zon" else "c_lib/build.zon",
+        .cpp_header_only => if (std.mem.eql(u8, lang, "cpp")) "cpp_header_only/build.zon" else "c_header_only/build.zon",
+        .c_exe => "c_project/build.zon",
+        .c_lib => "c_lib/build.zon",
+        .c_header_only => "c_header_only/build.zon",
     };
 }
 
@@ -132,20 +255,21 @@ fn replaceAllOwned(allocator: std.mem.Allocator, input: []u8, needle: []const u8
 
 fn replaceAll(allocator: std.mem.Allocator, input: []const u8, needle: []const u8, replacement: []const u8) ![]u8 {
     if (needle.len == 0) return allocator.dupe(u8, input);
-    var buffer = std.ArrayList(u8).init(allocator);
-    errdefer buffer.deinit();
+    // Use unmanaged ArrayList for Zig 0.16 compatibility
+    var buffer: std.ArrayList(u8) = .{};
+    defer buffer.deinit(allocator);
 
     var start: usize = 0;
     while (std.mem.indexOfPos(u8, input, start, needle)) |idx| {
-        try buffer.appendSlice(input[start..idx]);
-        try buffer.appendSlice(replacement);
+        try buffer.appendSlice(allocator, input[start..idx]);
+        try buffer.appendSlice(allocator, replacement);
         start = idx + needle.len;
     }
-    try buffer.appendSlice(input[start..]);
-    return buffer.toOwnedSlice();
+    try buffer.appendSlice(allocator, input[start..]);
+    return buffer.toOwnedSlice(allocator);
 }
 
-fn toUpperSnake(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
+pub fn toUpperSnake(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
     var result = try allocator.alloc(u8, s.len);
     for (s, 0..) |c, i| {
         result[i] = if (c == '-') '_' else std.ascii.toUpper(c);
@@ -153,10 +277,46 @@ fn toUpperSnake(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
     return result;
 }
 
+fn toSnake(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
+    var result = try allocator.alloc(u8, s.len);
+    for (s, 0..) |c, i| {
+        result[i] = if (c == '-') '_' else std.ascii.toLower(c);
+    }
+    return result;
+}
+
+/// Substitute template placeholders in content.
+/// Placeholders: {{PROJECT_NAME}}, {{PROJECT_NAME_UPPER}}, {{PROJECT_NAME_SNAKE}}, {{AUTHOR_NAME}}, {{AUTHOR_EMAIL}}
+pub fn substituteInContent(allocator: std.mem.Allocator, content: []const u8, project_name: []const u8) ![]u8 {
+    const project_name_upper = try toUpperSnake(allocator, project_name);
+    defer allocator.free(project_name_upper);
+    const project_name_snake = try toSnake(allocator, project_name);
+    defer allocator.free(project_name_snake);
+    const author_name = try getEnvOwned(allocator, &.{ "GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME", "USER" }, "Unknown");
+    defer allocator.free(author_name);
+    const author_email = try getEnvOwned(allocator, &.{ "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL", "EMAIL" }, "unknown@example.com");
+    defer allocator.free(author_email);
+
+    var result = try replaceAll(allocator, content, "{{PROJECT_NAME}}", project_name);
+    result = try replaceAllOwned(allocator, result, "{{PROJECT_NAME_UPPER}}", project_name_upper);
+    result = try replaceAllOwned(allocator, result, "{{PROJECT_NAME_SNAKE}}", project_name_snake);
+    result = try replaceAllOwned(allocator, result, "{{AUTHOR_NAME}}", author_name);
+    result = try replaceAllOwned(allocator, result, "{{AUTHOR_EMAIL}}", author_email);
+    return result;
+}
+
 fn getEnvOwned(allocator: std.mem.Allocator, keys: []const []const u8, default_value: []const u8) ![]u8 {
     for (keys) |key| {
-        const val = std.process.getEnvVarOwned(allocator, key) catch null;
-        if (val) |v| return v;
+        // Use C library getenv for Zig 0.16 compatibility
+        var key_buf: [256]u8 = undefined;
+        if (key.len >= key_buf.len) continue;
+        @memcpy(key_buf[0..key.len], key);
+        key_buf[key.len] = 0;
+        const c_result = std.c.getenv(@ptrCast(&key_buf));
+        if (c_result) |ptr| {
+            const val = std.mem.span(ptr);
+            if (val.len > 0) return allocator.dupe(u8, val);
+        }
     }
     return allocator.dupe(u8, default_value);
 }

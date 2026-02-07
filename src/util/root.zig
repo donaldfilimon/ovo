@@ -8,8 +8,12 @@
 //! - Semantic versioning parsing and comparison
 //! - Terminal colors, progress bars, and spinners
 //! - HTTP client for downloading packages
+//! - Zig 0.16 compatibility layer
 
 const std = @import("std");
+
+/// Compatibility layer for Zig 0.16 API changes.
+pub const compat = @import("compat.zig");
 
 /// File system utilities (recursive operations, path manipulation, glob expansion).
 pub const fs = @import("fs.zig");
@@ -35,6 +39,7 @@ pub const http = @import("http.zig");
 // Re-export commonly used types and functions
 
 // File system
+pub const cwd = fs.cwd;
 pub const exists = fs.exists;
 pub const isDirectory = fs.isDirectory;
 pub const isFile = fs.isFile;

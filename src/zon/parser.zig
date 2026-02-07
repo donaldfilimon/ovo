@@ -24,6 +24,15 @@ pub const ParseError = error{
     UnexpectedToken,
     AccessDenied,
     InvalidVersion,
+    // Additional errors from schema.zig operations
+    InvalidGlobPattern,
+    InvalidUrl,
+    InvalidPath,
+    DuplicateName,
+    CircularDependency,
+    IncompatibleOptions,
+    EmptyArray,
+    OutOfRange,
 };
 
 /// Parser context holding allocator and error information.
@@ -46,32 +55,32 @@ pub const ParserContext = struct {
     pub fn init(allocator: std.mem.Allocator, source_path: ?[]const u8) ParserContext {
         return .{
             .allocator = allocator,
-            .errors = std.ArrayList(ErrorInfo).init(allocator),
-            .warnings = std.ArrayList(ErrorInfo).init(allocator),
+            .errors = .{},
+            .warnings = .{},
             .source_path = source_path,
         };
     }
 
     pub fn deinit(self: *ParserContext) void {
         for (self.errors.items) |*e| e.deinit(self.allocator);
-        self.errors.deinit();
+        self.errors.deinit(self.allocator);
         for (self.warnings.items) |*w| w.deinit(self.allocator);
-        self.warnings.deinit();
+        self.warnings.deinit(self.allocator);
     }
 
     pub fn addError(self: *ParserContext, comptime fmt: []const u8, args: anytype) !void {
         const msg = try std.fmt.allocPrint(self.allocator, fmt, args);
-        try self.errors.append(.{ .message = msg });
+        try self.errors.append(self.allocator, .{ .message = msg });
     }
 
     pub fn addErrorAt(self: *ParserContext, line: u32, column: u32, comptime fmt: []const u8, args: anytype) !void {
         const msg = try std.fmt.allocPrint(self.allocator, fmt, args);
-        try self.errors.append(.{ .message = msg, .line = line, .column = column });
+        try self.errors.append(self.allocator, .{ .message = msg, .line = line, .column = column });
     }
 
     pub fn addWarning(self: *ParserContext, comptime fmt: []const u8, args: anytype) !void {
         const msg = try std.fmt.allocPrint(self.allocator, fmt, args);
-        try self.warnings.append(.{ .message = msg });
+        try self.warnings.append(self.allocator, .{ .message = msg });
     }
 
     pub fn hasErrors(self: *const ParserContext) bool {
@@ -153,6 +162,13 @@ const Lexer = struct {
             ',' => {
                 self.advance();
                 return .{ .type = .comma, .start = start, .end = self.pos, .line = start_line, .column = start_col };
+            },
+            '@' => {
+                self.advance();
+                if (self.pos < self.source.len and self.source[self.pos] == '"') {
+                    return self.readString();
+                }
+                return .{ .type = .invalid, .start = start, .end = self.pos, .line = start_line, .column = start_col };
             },
             '"' => return self.readString(),
             else => {
@@ -272,6 +288,8 @@ const Lexer = struct {
 /// ZON value types for intermediate representation.
 pub const ZonValue = union(enum) {
     string: []const u8,
+    /// Identifier (e.g. .executable) stored as string for enum-like values
+    identifier: []const u8,
     number: f64,
     boolean: bool,
     null_val: void,
@@ -281,6 +299,7 @@ pub const ZonValue = union(enum) {
     pub fn deinit(self: *ZonValue, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .string => |s| allocator.free(s),
+            .identifier => |s| allocator.free(s),
             .array => |arr| {
                 for (arr) |*v| v.deinit(allocator);
                 allocator.free(arr);
@@ -300,6 +319,7 @@ pub const ZonValue = union(enum) {
     pub fn getString(self: ZonValue) ?[]const u8 {
         return switch (self) {
             .string => |s| s,
+            .identifier => |s| s,
             else => null,
         };
     }
@@ -368,18 +388,30 @@ const ZonParser = struct {
         self.advance();
     }
 
-    pub fn parse(self: *ZonParser) !ZonValue {
+    // Explicit error type to avoid recursive inference issues in Zig 0.16
+    const ValueParseError = ParseError || error{OutOfMemory};
+
+    pub fn parse(self: *ZonParser) ValueParseError!ZonValue {
         return self.parseValue();
     }
 
-    fn parseValue(self: *ZonParser) !ZonValue {
+    fn parseValue(self: *ZonParser) ValueParseError!ZonValue {
         switch (self.current.type) {
             .dot => {
                 self.advance();
                 if (self.current.type == .left_brace) {
                     return self.parseObject();
                 }
-                // Anonymous struct field - not supported at top level
+                if (self.current.type == .string) {
+                    const text = try self.parseEscapedString(self.lexer.getText(self.current));
+                    self.advance();
+                    return .{ .string = text };
+                }
+                if (self.current.type == .identifier) {
+                    const text = try self.allocator.dupe(u8, self.lexer.getText(self.current));
+                    self.advance();
+                    return .{ .identifier = text };
+                }
                 return ParseError.InvalidSyntax;
             },
             .left_brace => return self.parseObject(),
@@ -406,6 +438,11 @@ const ZonParser = struct {
                 self.advance();
                 return .{ .null_val = {} };
             },
+            .identifier => {
+                const text = try self.allocator.dupe(u8, self.lexer.getText(self.current));
+                self.advance();
+                return .{ .identifier = text };
+            },
             else => {
                 try self.ctx.addErrorAt(
                     self.current.line,
@@ -418,7 +455,7 @@ const ZonParser = struct {
         }
     }
 
-    fn parseObject(self: *ZonParser) !ZonValue {
+    fn parseObject(self: *ZonParser) ValueParseError!ZonValue {
         try self.expect(.left_brace);
 
         var obj = std.StringHashMap(ZonValue).init(self.allocator);
@@ -432,29 +469,49 @@ const ZonParser = struct {
         }
 
         var is_array = false;
-        var array_items = std.ArrayList(ZonValue).init(self.allocator);
-        defer array_items.deinit();
+        var array_items = std.ArrayList(ZonValue){};
+        defer array_items.deinit(self.allocator);
 
         while (self.current.type != .right_brace and self.current.type != .eof) {
             if (self.current.type == .dot) {
                 self.advance();
                 if (self.current.type == .identifier) {
-                    // Named field: .name = value
+                    // Named field: .name = value  OR  array element: .executable
                     const key = try self.allocator.dupe(u8, self.lexer.getText(self.current));
                     errdefer self.allocator.free(key);
                     self.advance();
-                    try self.expect(.equals);
-                    var value = try self.parseValue();
-                    errdefer value.deinit(self.allocator);
-                    try obj.put(key, value);
+                    if (self.current.type == .equals) {
+                        try self.expect(.equals);
+                        var value = try self.parseValue();
+                        errdefer value.deinit(self.allocator);
+                        try obj.put(key, value);
+                    } else {
+                        // Array element: .executable (enum-like value)
+                        is_array = true;
+                        try array_items.append(self.allocator, .{ .identifier = key });
+                    }
+                } else if (self.current.type == .string) {
+                    // Named field: .@"name" = value (from @"" syntax)
+                    const key = try self.parseEscapedString(self.lexer.getText(self.current));
+                    errdefer self.allocator.free(key);
+                    self.advance();
+                    if (self.current.type == .equals) {
+                        try self.expect(.equals);
+                        var value = try self.parseValue();
+                        errdefer value.deinit(self.allocator);
+                        try obj.put(key, value);
+                    } else {
+                        is_array = true;
+                        try array_items.append(self.allocator, .{ .string = key });
+                    }
                 } else if (self.current.type == .left_brace) {
                     // Anonymous struct in array: .{ ... }
                     is_array = true;
                     var value = try self.parseObject();
                     errdefer value.deinit(self.allocator);
-                    try array_items.append(value);
+                    try array_items.append(self.allocator, value);
                 } else {
-                    try self.ctx.addError("Expected identifier or '{{' after '.'", .{});
+                    try self.ctx.addError("Expected identifier, string, or '{{' after '.'", .{});
                     return ParseError.InvalidSyntax;
                 }
             } else if (self.current.type == .string) {
@@ -462,20 +519,20 @@ const ZonParser = struct {
                 is_array = true;
                 const text = try self.parseEscapedString(self.lexer.getText(self.current));
                 self.advance();
-                try array_items.append(.{ .string = text });
+                try array_items.append(self.allocator, .{ .string = text });
             } else if (self.current.type == .number) {
                 // Array of numbers
                 is_array = true;
                 const text = self.lexer.getText(self.current);
                 const num = std.fmt.parseFloat(f64, text) catch 0.0;
                 self.advance();
-                try array_items.append(.{ .number = num });
+                try array_items.append(self.allocator, .{ .number = num });
             } else if (self.current.type == .true_lit or self.current.type == .false_lit) {
                 // Array of booleans
                 is_array = true;
                 const val = self.current.type == .true_lit;
                 self.advance();
-                try array_items.append(.{ .boolean = val });
+                try array_items.append(self.allocator, .{ .boolean = val });
             } else {
                 break;
             }
@@ -490,56 +547,65 @@ const ZonParser = struct {
 
         if (is_array and obj.count() == 0) {
             // It's an array
-            return .{ .array = try array_items.toOwnedSlice() };
+            return .{ .array = try array_items.toOwnedSlice(self.allocator) };
         }
 
         return .{ .object = obj };
     }
 
     fn parseEscapedString(self: *ZonParser, raw: []const u8) ![]u8 {
-        var result = std.ArrayList(u8).init(self.allocator);
-        errdefer result.deinit();
+        var result: std.ArrayList(u8) = .{};
+        errdefer result.deinit(self.allocator);
 
         var i: usize = 0;
         while (i < raw.len) {
             if (raw[i] == '\\' and i + 1 < raw.len) {
                 i += 1;
                 switch (raw[i]) {
-                    'n' => try result.append('\n'),
-                    'r' => try result.append('\r'),
-                    't' => try result.append('\t'),
-                    '\\' => try result.append('\\'),
-                    '"' => try result.append('"'),
+                    'n' => try result.append(self.allocator, '\n'),
+                    'r' => try result.append(self.allocator, '\r'),
+                    't' => try result.append(self.allocator, '\t'),
+                    '\\' => try result.append(self.allocator, '\\'),
+                    '"' => try result.append(self.allocator, '"'),
                     else => {
-                        try result.append('\\');
-                        try result.append(raw[i]);
+                        try result.append(self.allocator, '\\');
+                        try result.append(self.allocator, raw[i]);
                     },
                 }
             } else {
-                try result.append(raw[i]);
+                try result.append(self.allocator, raw[i]);
             }
             i += 1;
         }
 
-        return result.toOwnedSlice();
+        return result.toOwnedSlice(self.allocator);
     }
 };
 
 /// Parse a build.zon file from path.
 pub fn parseFile(allocator: std.mem.Allocator, path: []const u8) ParseError!schema.Project {
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| switch (err) {
-        error.FileNotFound => return ParseError.FileNotFound,
-        else => return ParseError.AccessDenied,
-    };
-    defer file.close();
+    // Use C library for file reading (Zig 0.16 compatibility)
+    var path_buf: [4096]u8 = undefined;
+    if (path.len >= path_buf.len) return ParseError.FileNotFound;
+    @memcpy(path_buf[0..path.len], path);
+    path_buf[path.len] = 0;
 
-    const content = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch |err| switch (err) {
-        error.OutOfMemory => return ParseError.OutOfMemory,
-        else => return ParseError.AccessDenied,
-    };
-    defer allocator.free(content);
+    const file = std.c.fopen(@ptrCast(&path_buf), "rb") orelse return ParseError.FileNotFound;
+    defer _ = std.c.fclose(file);
 
-    return parseSource(allocator, content, path);
+    // Read file in chunks (no fseek/ftell in Zig 0.16)
+    var content_list: std.ArrayList(u8) = .{};
+    defer content_list.deinit(allocator);
+
+    var buf: [4096]u8 = undefined;
+    while (true) {
+        const read = std.c.fread(&buf, 1, buf.len, file);
+        if (read == 0) break;
+        content_list.appendSlice(allocator, buf[0..read]) catch return ParseError.OutOfMemory;
+        if (content_list.items.len > 10 * 1024 * 1024) return ParseError.OutOfMemory;
+    }
+
+    return parseSource(allocator, content_list.items, path);
 }
 
 /// Parse build.zon content from a string.
@@ -696,17 +762,17 @@ fn getOptionalStringField(allocator: std.mem.Allocator, obj: *std.StringHashMap(
 fn getOptionalStringArrayField(allocator: std.mem.Allocator, obj: *std.StringHashMap(ZonValue), key: []const u8) !?[]const []const u8 {
     if (obj.getPtr(key)) |val| {
         if (val.getArray()) |arr| {
-            var result = std.ArrayList([]const u8).init(allocator);
+            var result = std.ArrayList([]const u8){};
             errdefer {
                 for (result.items) |s| allocator.free(s);
-                result.deinit();
+                result.deinit(allocator);
             }
             for (arr) |item| {
                 if (item.getString()) |s| {
-                    try result.append(try allocator.dupe(u8, s));
+                    try result.append(allocator, try allocator.dupe(u8, s));
                 }
             }
-            return result.toOwnedSlice();
+            return @as(?[]const []const u8, try result.toOwnedSlice(allocator));
         }
     }
     return null;
@@ -765,23 +831,38 @@ fn convertToDefaults(allocator: std.mem.Allocator, value: *ZonValue, ctx: *Parse
 }
 
 fn convertToTargets(allocator: std.mem.Allocator, value: *ZonValue, ctx: *ParserContext) ![]schema.Target {
-    const arr = value.getArray() orelse return &[_]schema.Target{};
-
-    var targets = std.ArrayList(schema.Target).init(allocator);
+    var targets = std.ArrayList(schema.Target){};
     errdefer {
         for (targets.items) |*t| t.deinit(allocator);
-        targets.deinit();
+        targets.deinit(allocator);
     }
 
+    if (value.getArray()) |arr| {
     for (arr) |*item| {
-        const target = try convertToTarget(allocator, item, ctx);
-        try targets.append(target);
+        const target = try convertToTargetWithName(allocator, item, ctx, null);
+        try targets.append(allocator, target);
+    }
+    } else if (value.getObject()) |obj| {
+        // Map format: .{ .@"name" = .{ .type = .executable, ... } }
+        var iter = obj.iterator();
+        while (iter.next()) |entry| {
+            const target_name = entry.key_ptr.*;
+            const target_val = entry.value_ptr;
+            const target = try convertToTargetWithName(allocator, target_val, ctx, target_name);
+            try targets.append(allocator, target);
+        }
+    } else {
+        return &[_]schema.Target{};
     }
 
-    return targets.toOwnedSlice();
+    return targets.toOwnedSlice(allocator);
 }
 
-fn convertToTarget(allocator: std.mem.Allocator, value: *ZonValue, ctx: *ParserContext) !schema.Target {
+fn convertToTargetFromMap(allocator: std.mem.Allocator, target_name: []const u8, value: *ZonValue, ctx: *ParserContext) !schema.Target {
+    return convertToTargetWithName(allocator, value, ctx, target_name);
+}
+
+fn convertToTargetWithName(allocator: std.mem.Allocator, value: *ZonValue, ctx: *ParserContext, name_override: ?[]const u8) !schema.Target {
     const obj = value.getObject() orelse {
         try ctx.addError("Target must be a struct", .{});
         return ParseError.InvalidSyntax;
@@ -793,8 +874,10 @@ fn convertToTarget(allocator: std.mem.Allocator, value: *ZonValue, ctx: *ParserC
         .sources = undefined,
     };
 
-    // Parse name
-    if (obj.get("name")) |name_val| {
+    // Parse name (or use override from map key)
+    if (name_override) |name| {
+        target.name = try allocator.dupe(u8, name);
+    } else if (obj.get("name")) |name_val| {
         if (name_val.getString()) |name| {
             target.name = try allocator.dupe(u8, name);
         } else {
@@ -807,15 +890,18 @@ fn convertToTarget(allocator: std.mem.Allocator, value: *ZonValue, ctx: *ParserC
     }
     errdefer allocator.free(target.name);
 
-    // Parse type
-    if (obj.get("type")) |type_val| {
-        if (type_val.getString()) |type_str| {
-            target.target_type = schema.TargetType.fromString(type_str) orelse {
-                try ctx.addError("Invalid target type: '{s}'", .{type_str});
+    // Parse type (accept string or identifier like .executable)
+    // Support both "type" and "target_type" for manifest compatibility
+    const type_val = obj.get("type") orelse obj.get("target_type");
+    if (type_val) |tv| {
+        const type_str = tv.getString(); // getString also returns identifier text
+        if (type_str) |ts| {
+            target.target_type = schema.TargetType.fromString(ts) orelse {
+                try ctx.addError("Invalid target type: '{s}'", .{ts});
                 return ParseError.InvalidEnumValue;
             };
         } else {
-            try ctx.addError("Target 'type' must be a string", .{});
+            try ctx.addError("Target 'type' must be a string or identifier", .{});
             return ParseError.InvalidFieldType;
         }
     } else {
@@ -823,7 +909,7 @@ fn convertToTarget(allocator: std.mem.Allocator, value: *ZonValue, ctx: *ParserC
         return ParseError.MissingRequiredField;
     }
 
-    // Parse sources
+    // Parse sources - support string or array of strings
     if (obj.getPtr("sources")) |sources_val| {
         target.sources = try convertToSourceSpecs(allocator, sources_val);
     } else {
@@ -834,8 +920,12 @@ fn convertToTarget(allocator: std.mem.Allocator, value: *ZonValue, ctx: *ParserC
         allocator.free(target.sources);
     }
 
-    // Optional fields
+    // Optional fields: includes, include_dirs, public_include
     if (obj.getPtr("includes")) |inc_val| {
+        target.includes = try convertToIncludeSpecs(allocator, inc_val);
+    } else if (obj.getPtr("include_dirs")) |inc_val| {
+        target.includes = try convertToIncludeSpecs(allocator, inc_val);
+    } else if (obj.getPtr("public_include")) |inc_val| {
         target.includes = try convertToIncludeSpecs(allocator, inc_val);
     }
     if (obj.getPtr("defines")) |def_val| {
@@ -844,7 +934,11 @@ fn convertToTarget(allocator: std.mem.Allocator, value: *ZonValue, ctx: *ParserC
     if (obj.getPtr("flags")) |flag_val| {
         target.flags = try convertToFlagSpecs(allocator, flag_val);
     }
-    target.link_libraries = try getOptionalStringArrayField(allocator, obj, "link_libraries");
+    target.link_libraries = blk: {
+        const link_libs = try getOptionalStringArrayField(allocator, obj, "link_libraries");
+        if (link_libs) |l| break :blk l;
+        break :blk try getOptionalStringArrayField(allocator, obj, "link");
+    };
     target.dependencies = try getOptionalStringArrayField(allocator, obj, "dependencies");
     target.output_name = try getOptionalStringField(allocator, obj, "output_name");
     target.install_dir = try getOptionalStringField(allocator, obj, "install_dir");
@@ -873,15 +967,15 @@ fn convertToTarget(allocator: std.mem.Allocator, value: *ZonValue, ctx: *ParserC
 fn convertToSourceSpecs(allocator: std.mem.Allocator, value: *ZonValue) ![]schema.SourceSpec {
     const arr = value.getArray() orelse return &[_]schema.SourceSpec{};
 
-    var sources = std.ArrayList(schema.SourceSpec).init(allocator);
+    var sources = std.ArrayList(schema.SourceSpec){};
     errdefer {
         for (sources.items) |*s| s.deinit(allocator);
-        sources.deinit();
+        sources.deinit(allocator);
     }
 
     for (arr) |*item| {
         if (item.getString()) |pattern| {
-            try sources.append(.{
+            try sources.append(allocator, .{
                 .pattern = try allocator.dupe(u8, pattern),
             });
         } else if (item.getObject()) |obj| {
@@ -893,25 +987,25 @@ fn convertToSourceSpecs(allocator: std.mem.Allocator, value: *ZonValue) ![]schem
             if (obj.getPtr("platform")) |plat_val| {
                 spec.platform = try convertToPlatformFilter(allocator, plat_val);
             }
-            try sources.append(spec);
+            try sources.append(allocator, spec);
         }
     }
 
-    return sources.toOwnedSlice();
+    return sources.toOwnedSlice(allocator);
 }
 
 fn convertToIncludeSpecs(allocator: std.mem.Allocator, value: *ZonValue) ![]schema.IncludeSpec {
     const arr = value.getArray() orelse return &[_]schema.IncludeSpec{};
 
-    var includes = std.ArrayList(schema.IncludeSpec).init(allocator);
+    var includes = std.ArrayList(schema.IncludeSpec){};
     errdefer {
         for (includes.items) |*i| i.deinit(allocator);
-        includes.deinit();
+        includes.deinit(allocator);
     }
 
     for (arr) |*item| {
         if (item.getString()) |path| {
-            try includes.append(.{
+            try includes.append(allocator, .{
                 .path = try allocator.dupe(u8, path),
             });
         } else if (item.getObject()) |obj| {
@@ -923,31 +1017,31 @@ fn convertToIncludeSpecs(allocator: std.mem.Allocator, value: *ZonValue) ![]sche
             if (obj.getPtr("platform")) |plat_val| {
                 spec.platform = try convertToPlatformFilter(allocator, plat_val);
             }
-            try includes.append(spec);
+            try includes.append(allocator, spec);
         }
     }
 
-    return includes.toOwnedSlice();
+    return includes.toOwnedSlice(allocator);
 }
 
 fn convertToDefineSpecs(allocator: std.mem.Allocator, value: *ZonValue) ![]schema.DefineSpec {
     const arr = value.getArray() orelse return &[_]schema.DefineSpec{};
 
-    var defines = std.ArrayList(schema.DefineSpec).init(allocator);
+    var defines = std.ArrayList(schema.DefineSpec){};
     errdefer {
         for (defines.items) |*d| d.deinit(allocator);
-        defines.deinit();
+        defines.deinit(allocator);
     }
 
     for (arr) |*item| {
         if (item.getString()) |def_str| {
             if (std.mem.indexOf(u8, def_str, "=")) |eq_idx| {
-                try defines.append(.{
+                try defines.append(allocator, .{
                     .name = try allocator.dupe(u8, def_str[0..eq_idx]),
                     .value = try allocator.dupe(u8, def_str[eq_idx + 1 ..]),
                 });
             } else {
-                try defines.append(.{
+                try defines.append(allocator, .{
                     .name = try allocator.dupe(u8, def_str),
                 });
             }
@@ -960,42 +1054,56 @@ fn convertToDefineSpecs(allocator: std.mem.Allocator, value: *ZonValue) ![]schem
             if (obj.getPtr("platform")) |plat_val| {
                 spec.platform = try convertToPlatformFilter(allocator, plat_val);
             }
-            try defines.append(spec);
+            try defines.append(allocator, spec);
         }
     }
 
-    return defines.toOwnedSlice();
+    return defines.toOwnedSlice(allocator);
 }
 
 fn convertToFlagSpecs(allocator: std.mem.Allocator, value: *ZonValue) ![]schema.FlagSpec {
-    const arr = value.getArray() orelse return &[_]schema.FlagSpec{};
-
-    var flags = std.ArrayList(schema.FlagSpec).init(allocator);
+    var flags = std.ArrayList(schema.FlagSpec){};
     errdefer {
         for (flags.items) |*f| f.deinit(allocator);
-        flags.deinit();
+        flags.deinit(allocator);
     }
 
-    for (arr) |*item| {
-        if (item.getString()) |flag_str| {
-            try flags.append(.{
-                .flag = try allocator.dupe(u8, flag_str),
-            });
-        } else if (item.getObject()) |obj| {
-            const flag = (try getOptionalStringField(allocator, obj, "flag")) orelse continue;
-            var spec = schema.FlagSpec{
-                .flag = flag,
-                .compile_only = getOptionalBoolField(obj, "compile_only") orelse false,
-                .link_only = getOptionalBoolField(obj, "link_only") orelse false,
-            };
-            if (obj.getPtr("platform")) |plat_val| {
-                spec.platform = try convertToPlatformFilter(allocator, plat_val);
+    if (value.getArray()) |arr| {
+        for (arr) |*item| {
+            try appendFlagFromValue(allocator, &flags, item);
+        }
+    } else if (value.getObject()) |obj| {
+        // Object format: .{ .common = .{ "-Wall", ... }, .release = .{"-flto"} }
+        // Use .common for compile flags (applicable to all builds)
+        if (obj.getPtr("common")) |common_val| {
+            if (common_val.getArray()) |common_arr| {
+                for (common_arr) |*item| {
+                    try appendFlagFromValue(allocator, &flags, item);
+                }
             }
-            try flags.append(spec);
         }
     }
 
-    return flags.toOwnedSlice();
+    return flags.toOwnedSlice(allocator);
+}
+
+fn appendFlagFromValue(allocator: std.mem.Allocator, flags: *std.ArrayList(schema.FlagSpec), item: *ZonValue) !void {
+    if (item.getString()) |flag_str| {
+        try flags.append(allocator, .{
+            .flag = try allocator.dupe(u8, flag_str),
+        });
+    } else if (item.getObject()) |obj| {
+        const flag = (try getOptionalStringField(allocator, obj, "flag")) orelse return;
+        var spec = schema.FlagSpec{
+            .flag = flag,
+            .compile_only = getOptionalBoolField(obj, "compile_only") orelse false,
+            .link_only = getOptionalBoolField(obj, "link_only") orelse false,
+        };
+        if (obj.getPtr("platform")) |plat_val| {
+            spec.platform = try convertToPlatformFilter(allocator, plat_val);
+        }
+        try flags.append(allocator, spec);
+    }
 }
 
 fn convertToPlatformFilter(allocator: std.mem.Allocator, value: *ZonValue) !schema.PlatformFilter {
@@ -1022,18 +1130,18 @@ fn convertToPlatformFilter(allocator: std.mem.Allocator, value: *ZonValue) !sche
 fn convertToDependencies(allocator: std.mem.Allocator, value: *ZonValue, ctx: *ParserContext) ![]schema.Dependency {
     const arr = value.getArray() orelse return &[_]schema.Dependency{};
 
-    var deps = std.ArrayList(schema.Dependency).init(allocator);
+    var deps = std.ArrayList(schema.Dependency){};
     errdefer {
         for (deps.items) |*d| d.deinit(allocator);
-        deps.deinit();
+        deps.deinit(allocator);
     }
 
     for (arr) |*item| {
         const dep = try convertToDependency(allocator, item, ctx);
-        try deps.append(dep);
+        try deps.append(allocator, dep);
     }
 
-    return deps.toOwnedSlice();
+    return deps.toOwnedSlice(allocator);
 }
 
 fn convertToDependency(allocator: std.mem.Allocator, value: *ZonValue, ctx: *ParserContext) !schema.Dependency {
@@ -1166,10 +1274,10 @@ fn convertToTests(allocator: std.mem.Allocator, value: *ZonValue, ctx: *ParserCo
     _ = ctx;
     const arr = value.getArray() orelse return &[_]schema.TestSpec{};
 
-    var tests = std.ArrayList(schema.TestSpec).init(allocator);
+    var tests = std.ArrayList(schema.TestSpec){};
     errdefer {
         for (tests.items) |*t| t.deinit(allocator);
-        tests.deinit();
+        tests.deinit(allocator);
     }
 
     for (arr) |*item| {
@@ -1189,21 +1297,21 @@ fn convertToTests(allocator: std.mem.Allocator, value: *ZonValue, ctx: *ParserCo
             test_spec.env = try getOptionalStringArrayField(allocator, obj, "env");
             test_spec.working_dir = try getOptionalStringField(allocator, obj, "working_dir");
             test_spec.timeout = getOptionalU32Field(obj, "timeout");
-            try tests.append(test_spec);
+            try tests.append(allocator, test_spec);
         }
     }
 
-    return tests.toOwnedSlice();
+    return tests.toOwnedSlice(allocator);
 }
 
 fn convertToBenchmarks(allocator: std.mem.Allocator, value: *ZonValue, ctx: *ParserContext) ![]schema.BenchmarkSpec {
     _ = ctx;
     const arr = value.getArray() orelse return &[_]schema.BenchmarkSpec{};
 
-    var benchmarks = std.ArrayList(schema.BenchmarkSpec).init(allocator);
+    var benchmarks = std.ArrayList(schema.BenchmarkSpec){};
     errdefer {
         for (benchmarks.items) |*b| b.deinit(allocator);
-        benchmarks.deinit();
+        benchmarks.deinit(allocator);
     }
 
     for (arr) |*item| {
@@ -1221,21 +1329,21 @@ fn convertToBenchmarks(allocator: std.mem.Allocator, value: *ZonValue, ctx: *Par
             bench.framework = try getOptionalStringField(allocator, obj, "framework");
             bench.iterations = getOptionalU32Field(obj, "iterations");
             bench.warmup = getOptionalU32Field(obj, "warmup");
-            try benchmarks.append(bench);
+            try benchmarks.append(allocator, bench);
         }
     }
 
-    return benchmarks.toOwnedSlice();
+    return benchmarks.toOwnedSlice(allocator);
 }
 
 fn convertToExamples(allocator: std.mem.Allocator, value: *ZonValue, ctx: *ParserContext) ![]schema.ExampleSpec {
     _ = ctx;
     const arr = value.getArray() orelse return &[_]schema.ExampleSpec{};
 
-    var examples = std.ArrayList(schema.ExampleSpec).init(allocator);
+    var examples = std.ArrayList(schema.ExampleSpec){};
     errdefer {
         for (examples.items) |*e| e.deinit(allocator);
-        examples.deinit();
+        examples.deinit(allocator);
     }
 
     for (arr) |*item| {
@@ -1251,21 +1359,21 @@ fn convertToExamples(allocator: std.mem.Allocator, value: *ZonValue, ctx: *Parse
             }
             example.dependencies = try getOptionalStringArrayField(allocator, obj, "dependencies");
             example.description = try getOptionalStringField(allocator, obj, "description");
-            try examples.append(example);
+            try examples.append(allocator, example);
         }
     }
 
-    return examples.toOwnedSlice();
+    return examples.toOwnedSlice(allocator);
 }
 
 fn convertToScripts(allocator: std.mem.Allocator, value: *ZonValue, ctx: *ParserContext) ![]schema.ScriptSpec {
     _ = ctx;
     const arr = value.getArray() orelse return &[_]schema.ScriptSpec{};
 
-    var scripts = std.ArrayList(schema.ScriptSpec).init(allocator);
+    var scripts = std.ArrayList(schema.ScriptSpec){};
     errdefer {
         for (scripts.items) |*s| s.deinit(allocator);
-        scripts.deinit();
+        scripts.deinit(allocator);
     }
 
     for (arr) |*item| {
@@ -1281,21 +1389,21 @@ fn convertToScripts(allocator: std.mem.Allocator, value: *ZonValue, ctx: *Parser
                 defer allocator.free(hook_str);
                 script.hook = schema.HookType.fromString(hook_str);
             }
-            try scripts.append(script);
+            try scripts.append(allocator, script);
         }
     }
 
-    return scripts.toOwnedSlice();
+    return scripts.toOwnedSlice(allocator);
 }
 
 fn convertToProfiles(allocator: std.mem.Allocator, value: *ZonValue, ctx: *ParserContext) ![]schema.Profile {
     _ = ctx;
     const arr = value.getArray() orelse return &[_]schema.Profile{};
 
-    var profiles = std.ArrayList(schema.Profile).init(allocator);
+    var profiles = std.ArrayList(schema.Profile){};
     errdefer {
         for (profiles.items) |*p| p.deinit(allocator);
-        profiles.deinit();
+        profiles.deinit(allocator);
     }
 
     for (arr) |*item| {
@@ -1326,20 +1434,20 @@ fn convertToProfiles(allocator: std.mem.Allocator, value: *ZonValue, ctx: *Parse
             profile.debug_info = getOptionalBoolField(obj, "debug_info");
             profile.lto = getOptionalBoolField(obj, "lto");
             profile.pic = getOptionalBoolField(obj, "pic");
-            try profiles.append(profile);
+            try profiles.append(allocator, profile);
         }
     }
 
-    return profiles.toOwnedSlice();
+    return profiles.toOwnedSlice(allocator);
 }
 
 fn convertToCrossTargets(allocator: std.mem.Allocator, value: *ZonValue, ctx: *ParserContext) ![]schema.CrossTarget {
     const arr = value.getArray() orelse return &[_]schema.CrossTarget{};
 
-    var targets = std.ArrayList(schema.CrossTarget).init(allocator);
+    var targets = std.ArrayList(schema.CrossTarget){};
     errdefer {
         for (targets.items) |*t| t.deinit(allocator);
-        targets.deinit();
+        targets.deinit(allocator);
     }
 
     for (arr) |*item| {
@@ -1381,21 +1489,21 @@ fn convertToCrossTargets(allocator: std.mem.Allocator, value: *ZonValue, ctx: *P
             if (obj.getPtr("flags")) |flag_val| {
                 target.flags = try convertToFlagSpecs(allocator, flag_val);
             }
-            try targets.append(target);
+            try targets.append(allocator, target);
         }
     }
 
-    return targets.toOwnedSlice();
+    return targets.toOwnedSlice(allocator);
 }
 
 fn convertToFeatures(allocator: std.mem.Allocator, value: *ZonValue, ctx: *ParserContext) ![]schema.Feature {
     _ = ctx;
     const arr = value.getArray() orelse return &[_]schema.Feature{};
 
-    var features = std.ArrayList(schema.Feature).init(allocator);
+    var features = std.ArrayList(schema.Feature){};
     errdefer {
         for (features.items) |*f| f.deinit(allocator);
-        features.deinit();
+        features.deinit(allocator);
     }
 
     for (arr) |*item| {
@@ -1411,11 +1519,11 @@ fn convertToFeatures(allocator: std.mem.Allocator, value: *ZonValue, ctx: *Parse
             if (obj.getPtr("defines")) |def_val| {
                 feature.defines = try convertToDefineSpecs(allocator, def_val);
             }
-            try features.append(feature);
+            try features.append(allocator, feature);
         }
     }
 
-    return features.toOwnedSlice();
+    return features.toOwnedSlice(allocator);
 }
 
 fn convertToModuleSettings(allocator: std.mem.Allocator, value: *ZonValue, ctx: *ParserContext) !schema.ModuleSettings {

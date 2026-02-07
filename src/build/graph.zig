@@ -129,13 +129,13 @@ pub const BuildNode = struct {
     }
 
     pub fn addDependent(self: *BuildNode, dep_id: u64) !void {
-        var list = std.ArrayList(u64).init(self.allocator);
-        defer list.deinit();
-        try list.appendSlice(self.dependents);
-        try list.append(dep_id);
+        var list = std.ArrayList(u64){};
+        defer list.deinit(self.allocator);
+        try list.appendSlice(self.allocator, self.dependents);
+        try list.append(self.allocator, dep_id);
 
         if (self.dependents.len > 0) self.allocator.free(self.dependents);
-        self.dependents = try list.toOwnedSlice();
+        self.dependents = try list.toOwnedSlice(self.allocator);
     }
 
     pub fn setInputs(self: *BuildNode, inputs: []const []const u8) !void {
@@ -221,8 +221,8 @@ pub const BuildGraph = struct {
         return .{
             .nodes = std.AutoHashMap(u64, BuildNode).init(allocator),
             .module_providers = std.StringHashMap(u64).init(allocator),
-            .roots = std.ArrayList(u64).init(allocator),
-            .leaves = std.ArrayList(u64).init(allocator),
+            .roots = .{},
+            .leaves = .{},
             .next_id = 1,
             .total_nodes = 0,
             .allocator = allocator,
@@ -243,8 +243,8 @@ pub const BuildGraph = struct {
         }
         self.module_providers.deinit();
 
-        self.roots.deinit();
-        self.leaves.deinit();
+        self.roots.deinit(self.allocator);
+        self.leaves.deinit(self.allocator);
         self.* = undefined;
     }
 
@@ -258,8 +258,8 @@ pub const BuildGraph = struct {
         errdefer node.deinit();
 
         try self.nodes.put(id, node);
-        try self.leaves.append(id);
-        try self.roots.append(id);
+        try self.leaves.append(self.allocator, id);
+        try self.roots.append(self.allocator, id);
 
         return id;
     }
@@ -280,15 +280,15 @@ pub const BuildGraph = struct {
         var dependency_node = self.getMut(dependency) orelse return error.NodeNotFound;
 
         // Update dependent's dependencies
-        var deps_list = std.ArrayList(u64).init(self.allocator);
-        defer deps_list.deinit();
-        try deps_list.appendSlice(dep_node.dependencies);
-        try deps_list.append(dependency);
+        var deps_list: std.ArrayList(u64) = .{};
+        defer deps_list.deinit(self.allocator);
+        try deps_list.appendSlice(self.allocator, dep_node.dependencies);
+        try deps_list.append(self.allocator, dependency);
 
         if (dep_node.dependencies.len > 0) {
             self.allocator.free(dep_node.dependencies);
         }
-        dep_node.dependencies = try deps_list.toOwnedSlice();
+        dep_node.dependencies = try deps_list.toOwnedSlice(self.allocator);
 
         // Update dependency's dependents
         try dependency_node.addDependent(dependent);
@@ -384,8 +384,8 @@ pub const BuildGraph = struct {
 
     /// Get topological ordering of nodes (dependencies before dependents).
     pub fn topologicalOrder(self: *const BuildGraph) ![]u64 {
-        var result = std.ArrayList(u64).init(self.allocator);
-        errdefer result.deinit();
+        var result = std.ArrayList(u64){};
+        errdefer result.deinit(self.allocator);
 
         var in_degree = std.AutoHashMap(u64, usize).init(self.allocator);
         defer in_degree.deinit();
@@ -397,26 +397,26 @@ pub const BuildGraph = struct {
         }
 
         // Start with nodes that have no dependencies
-        var queue = std.ArrayList(u64).init(self.allocator);
-        defer queue.deinit();
+        var queue = std.ArrayList(u64){};
+        defer queue.deinit(self.allocator);
 
         var deg_it = in_degree.iterator();
         while (deg_it.next()) |entry| {
             if (entry.value_ptr.* == 0) {
-                try queue.append(entry.key_ptr.*);
+                try queue.append(self.allocator, entry.key_ptr.*);
             }
         }
 
         while (queue.items.len > 0) {
             const node_id = queue.orderedRemove(0);
-            try result.append(node_id);
+            try result.append(self.allocator, node_id);
 
             if (self.get(node_id)) |node| {
                 for (node.dependents) |dep_id| {
                     const deg_ptr = in_degree.getPtr(dep_id) orelse continue;
                     deg_ptr.* -= 1;
                     if (deg_ptr.* == 0) {
-                        try queue.append(dep_id);
+                        try queue.append(self.allocator, dep_id);
                     }
                 }
             }
@@ -426,7 +426,7 @@ pub const BuildGraph = struct {
             return error.CycleDetected;
         }
 
-        return result.toOwnedSlice();
+        return result.toOwnedSlice(self.allocator);
     }
 
     /// Get all nodes that are ready to execute.
@@ -435,7 +435,7 @@ pub const BuildGraph = struct {
         var it = self.nodes.iterator();
         while (it.next()) |entry| {
             if (entry.value_ptr.isReady(self)) {
-                try out.append(entry.key_ptr.*);
+                try out.append(self.allocator, entry.key_ptr.*);
             }
         }
     }
@@ -716,8 +716,8 @@ test "ready nodes detection" {
     try graph.addEdge(id3, id1);
     try graph.addEdge(id3, id2);
 
-    var ready = std.ArrayList(u64).init(allocator);
-    defer ready.deinit();
+    var ready: std.ArrayList(u64) = .{};
+    defer ready.deinit(allocator);
 
     try graph.getReadyNodes(&ready);
     // a and b should be ready

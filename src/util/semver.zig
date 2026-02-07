@@ -62,18 +62,18 @@ pub const Version = struct {
 
     /// Convert to string.
     pub fn toString(self: *const Version, allocator: Allocator) ![]u8 {
-        var list = std.ArrayList(u8).init(allocator);
-        errdefer list.deinit();
+        var list: std.ArrayList(u8) = .empty;
+        errdefer list.deinit(allocator);
 
-        try list.writer().print("{d}.{d}.{d}", .{ self.major, self.minor, self.patch });
+        try list.writer(allocator).print("{d}.{d}.{d}", .{ self.major, self.minor, self.patch });
         if (self.prerelease) |pr| {
-            try list.writer().print("-{s}", .{pr});
+            try list.writer(allocator).print("-{s}", .{pr});
         }
         if (self.build_metadata) |bm| {
-            try list.writer().print("+{s}", .{bm});
+            try list.writer(allocator).print("+{s}", .{bm});
         }
 
-        return list.toOwnedSlice();
+        return list.toOwnedSlice(allocator);
     }
 
     /// Compare two versions (ignoring build metadata per SemVer spec).
@@ -315,13 +315,13 @@ fn satisfiesConstraint(version: Version, constraint: Range.Constraint) bool {
 
 /// Parse a version range string.
 pub fn parseRange(allocator: Allocator, str: []const u8) !Range {
-    var constraints = std.ArrayList(Range.Constraint).init(allocator);
+    var constraints: std.ArrayList(Range.Constraint) = .empty;
     errdefer {
         for (constraints.items) |*c| {
             var v = c.version;
             v.deinit();
         }
-        constraints.deinit();
+        constraints.deinit(allocator);
     }
 
     // Split on spaces or commas
@@ -329,7 +329,7 @@ pub fn parseRange(allocator: Allocator, str: []const u8) !Range {
 
     while (iter.next()) |part| {
         const constraint = try parseConstraint(allocator, part);
-        try constraints.append(constraint);
+        try constraints.append(allocator, constraint);
     }
 
     if (constraints.items.len == 0) {
@@ -337,7 +337,7 @@ pub fn parseRange(allocator: Allocator, str: []const u8) !Range {
     }
 
     return Range{
-        .constraints = try constraints.toOwnedSlice(),
+        .constraints = try constraints.toOwnedSlice(allocator),
         .allocator = allocator,
     };
 }

@@ -93,7 +93,7 @@ pub fn generate(allocator: Allocator, project: *const Project, output_path: []co
     var uuid = UuidGenerator.init();
 
     // Initialize object references
-    var refs = ObjectRefs{
+    const refs = ObjectRefs{
         .project_ref = uuid.next(),
         .main_group_ref = uuid.next(),
         .sources_group_ref = uuid.next(),

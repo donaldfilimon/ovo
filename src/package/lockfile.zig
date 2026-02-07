@@ -158,7 +158,7 @@ pub const Lockfile = struct {
         return .{
             .allocator = allocator,
             .packages = std.StringHashMap(LockedPackage).init(allocator),
-            .roots = std.ArrayList([]const u8).init(allocator),
+            .roots = .empty,
         };
     }
 
@@ -173,7 +173,7 @@ pub const Lockfile = struct {
         for (self.roots.items) |root| {
             self.allocator.free(root);
         }
-        self.roots.deinit();
+        self.roots.deinit(self.allocator);
 
         if (self.metadata.manifest_hash) |h| self.allocator.free(h);
         if (self.metadata.ovo_version) |v| self.allocator.free(v);
@@ -211,7 +211,7 @@ pub const Lockfile = struct {
             if (std.mem.eql(u8, root, name)) return;
         }
         const duped = try self.allocator.dupe(u8, name);
-        try self.roots.append(duped);
+        try self.roots.append(self.allocator, duped);
     }
 
     /// Load lockfile from disk.
@@ -476,12 +476,12 @@ test "lockfile round trip" {
     lockfile.metadata.updated_at = 1234567890;
 
     // Serialize
-    var buffer = std.ArrayList(u8).init(allocator);
-    defer buffer.deinit();
-    try lockfile.serialize(buffer.writer());
+    var buf: [4096]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try lockfile.serialize(&writer);
 
     // Parse back
-    var parsed = try Lockfile.parse(allocator, buffer.items);
+    var parsed = try Lockfile.parse(allocator, buf[0..writer.end]);
     defer parsed.deinit();
 
     const pkg = parsed.getPackage("test-pkg").?;

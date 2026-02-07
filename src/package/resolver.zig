@@ -407,7 +407,7 @@ pub const Resolver = struct {
         var iter = self.constraints.iterator();
         while (iter.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
-            entry.value_ptr.deinit();
+            entry.value_ptr.deinit(self.allocator);
         }
         self.constraints.deinit();
     }

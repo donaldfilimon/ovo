@@ -129,6 +129,7 @@ pub const TargetKind = enum {
 
 /// Compiler/linker flags
 pub const CompileFlags = struct {
+    allocator: Allocator,
     defines: std.ArrayList([]const u8),
     include_paths: std.ArrayList([]const u8),
     system_include_paths: std.ArrayList([]const u8),
@@ -139,24 +140,25 @@ pub const CompileFlags = struct {
 
     pub fn init(allocator: Allocator) CompileFlags {
         return .{
-            .defines = std.ArrayList([]const u8).init(allocator),
-            .include_paths = std.ArrayList([]const u8).init(allocator),
-            .system_include_paths = std.ArrayList([]const u8).init(allocator),
-            .compile_flags = std.ArrayList([]const u8).init(allocator),
-            .link_flags = std.ArrayList([]const u8).init(allocator),
-            .link_libraries = std.ArrayList([]const u8).init(allocator),
-            .frameworks = std.ArrayList([]const u8).init(allocator),
+            .allocator = allocator,
+            .defines = .empty,
+            .include_paths = .empty,
+            .system_include_paths = .empty,
+            .compile_flags = .empty,
+            .link_flags = .empty,
+            .link_libraries = .empty,
+            .frameworks = .empty,
         };
     }
 
     pub fn deinit(self: *CompileFlags) void {
-        self.defines.deinit();
-        self.include_paths.deinit();
-        self.system_include_paths.deinit();
-        self.compile_flags.deinit();
-        self.link_flags.deinit();
-        self.link_libraries.deinit();
-        self.frameworks.deinit();
+        self.defines.deinit(self.allocator);
+        self.include_paths.deinit(self.allocator);
+        self.system_include_paths.deinit(self.allocator);
+        self.compile_flags.deinit(self.allocator);
+        self.link_flags.deinit(self.allocator);
+        self.link_libraries.deinit(self.allocator);
+        self.frameworks.deinit(self.allocator);
     }
 };
 
@@ -194,6 +196,7 @@ pub const Dependency = struct {
 
 /// Build target representation
 pub const Target = struct {
+    allocator: Allocator,
     name: []const u8,
     kind: TargetKind,
     sources: std.ArrayList([]const u8),
@@ -205,20 +208,21 @@ pub const Target = struct {
 
     pub fn init(allocator: Allocator, name: []const u8, kind: TargetKind) Target {
         return .{
+            .allocator = allocator,
             .name = name,
             .kind = kind,
-            .sources = std.ArrayList([]const u8).init(allocator),
-            .headers = std.ArrayList([]const u8).init(allocator),
+            .sources = .empty,
+            .headers = .empty,
             .flags = CompileFlags.init(allocator),
-            .dependencies = std.ArrayList([]const u8).init(allocator),
+            .dependencies = .empty,
         };
     }
 
-    pub fn deinit(self: *Target) void {
-        self.sources.deinit();
-        self.headers.deinit();
+    pub fn deinit(self: *Target, allocator: Allocator) void {
+        self.sources.deinit(allocator);
+        self.headers.deinit(allocator);
         self.flags.deinit();
-        self.dependencies.deinit();
+        self.dependencies.deinit(allocator);
     }
 };
 
@@ -242,36 +246,36 @@ pub const Project = struct {
             .allocator = allocator,
             .name = name,
             .source_root = source_root,
-            .targets = std.ArrayList(Target).init(allocator),
-            .dependencies = std.ArrayList(Dependency).init(allocator),
-            .configs = std.ArrayList(BuildConfig).init(allocator),
-            .warnings = std.ArrayList(TranslationWarning).init(allocator),
+            .targets = .empty,
+            .dependencies = .empty,
+            .configs = .empty,
+            .warnings = .empty,
         };
     }
 
     pub fn deinit(self: *Project) void {
         for (self.targets.items) |*target| {
-            target.deinit();
+            target.deinit(self.allocator);
         }
-        self.targets.deinit();
-        self.dependencies.deinit();
+        self.targets.deinit(self.allocator);
+        self.dependencies.deinit(self.allocator);
         for (self.configs.items) |*config| {
             config.flags.deinit();
         }
-        self.configs.deinit();
-        self.warnings.deinit();
+        self.configs.deinit(self.allocator);
+        self.warnings.deinit(self.allocator);
     }
 
     pub fn addWarning(self: *Project, warning: TranslationWarning) !void {
-        try self.warnings.append(warning);
+        try self.warnings.append(self.allocator, warning);
     }
 
     pub fn addTarget(self: *Project, target: Target) !void {
-        try self.targets.append(target);
+        try self.targets.append(self.allocator, target);
     }
 
     pub fn addDependency(self: *Project, dep: Dependency) !void {
-        try self.dependencies.append(dep);
+        try self.dependencies.append(self.allocator, dep);
     }
 };
 

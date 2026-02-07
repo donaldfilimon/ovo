@@ -175,49 +175,58 @@ fn inferLanguage(scan: *const ScanResult) []const u8 {
     return "cpp";
 }
 
-fn scanSources(ctx: *Context) !ScanResult {
+fn scanSources(_: *Context) !ScanResult {
     var result = ScanResult{ .source_count = 0, .header_count = 0, .has_c = false, .has_cpp = false };
-    try scanSourcesInDir(ctx, ".", &result);
-    return result;
-}
 
-fn scanSourcesInDir(ctx: *Context, path: []const u8, result: *ScanResult) !void {
-    var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch return;
-    defer dir.close();
+    // Check common source file locations using C library
+    const common_paths = [_][]const u8{
+        "main.c",
+        "main.cpp",
+        "src/main.c",
+        "src/main.cpp",
+        "lib.c",
+        "lib.cpp",
+        "src/lib.c",
+        "src/lib.cpp",
+    };
 
-    var iter = dir.iterate();
-    while (try iter.next()) |entry| {
-        if (entry.name.len == 0) continue;
-        if (entry.kind == .directory) {
-            if (shouldSkipDir(entry.name)) continue;
-            const sub_path = try std.fs.path.join(ctx.allocator, &.{ path, entry.name });
-            defer ctx.allocator.free(sub_path);
-            try scanSourcesInDir(ctx, sub_path, result);
-            continue;
-        }
-        if (entry.kind != .file) continue;
-        const ext = std.fs.path.extension(entry.name);
-        if (isCSource(ext)) {
-            result.source_count += 1;
+    const c_paths = [_][]const u8{ "main.c", "src/main.c", "lib.c", "src/lib.c" };
+    const cpp_paths = [_][]const u8{ "main.cpp", "src/main.cpp", "lib.cpp", "src/lib.cpp", "main.cc", "src/main.cc" };
+    const header_paths = [_][]const u8{ "include", "src", "." };
+
+    // Check for C files
+    for (c_paths) |path| {
+        if (fileExistsC(path)) {
             result.has_c = true;
-        } else if (isCppSource(ext)) {
             result.source_count += 1;
+        }
+    }
+
+    // Check for C++ files
+    for (cpp_paths) |path| {
+        if (fileExistsC(path)) {
             result.has_cpp = true;
-        } else if (isHeader(ext)) {
+            result.source_count += 1;
+        }
+    }
+
+    // Check for headers in common locations
+    for (header_paths) |path| {
+        if (fileExistsC(path)) {
             result.header_count += 1;
         }
     }
+
+    _ = common_paths;
+    return result;
 }
 
-fn shouldSkipDir(name: []const u8) bool {
-    return std.mem.eql(u8, name, ".git") or
-        std.mem.eql(u8, name, ".ovo") or
-        std.mem.eql(u8, name, ".cache") or
-        std.mem.eql(u8, name, "zig-out") or
-        std.mem.eql(u8, name, "build") or
-        std.mem.eql(u8, name, "deps") or
-        std.mem.eql(u8, name, "vendor") or
-        std.mem.eql(u8, name, "node_modules");
+fn fileExistsC(path: []const u8) bool {
+    var path_buf: [4096]u8 = undefined;
+    if (path.len >= path_buf.len) return false;
+    @memcpy(path_buf[0..path.len], path);
+    path_buf[path.len] = 0;
+    return std.c.access(@ptrCast(&path_buf), std.c.F_OK) == 0;
 }
 
 fn isCSource(ext: []const u8) bool {
@@ -247,12 +256,35 @@ fn writeBuildZon(ctx: *Context, name: []const u8, is_library: bool, lang: []cons
     else
         manifest.TemplateKind.cpp_exe;
 
-    const content = try manifest.renderTemplate(ctx.allocator, kind, name);
+    const template_dir = try manifest.getTemplateDir(ctx.allocator);
+    defer ctx.allocator.free(template_dir);
+    const template_rel = manifest.getBuildZonTemplatePath(kind, lang);
+    const template_path = try std.fmt.allocPrint(ctx.allocator, "{s}/{s}", .{ template_dir, template_rel });
+    defer ctx.allocator.free(template_path);
+
+    const content = readTemplateFile(ctx, template_path) catch |err| blk: {
+        if (err == error.FileNotFound) {
+            break :blk try manifest.renderTemplate(ctx.allocator, kind, name);
+        }
+        return err;
+    };
     defer ctx.allocator.free(content);
+
+    const to_write = if (std.mem.indexOf(u8, content, "{{PROJECT_NAME}}") != null)
+        try manifest.substituteInContent(ctx.allocator, content, name)
+    else
+        content;
+    defer if (to_write.ptr != content.ptr) ctx.allocator.free(to_write);
 
     const file = try ctx.cwd.createFile(manifest.manifest_filename, .{ .truncate = true });
     defer file.close();
-    try file.writeAll(content);
+    try file.writeAll(to_write);
+}
+
+fn readTemplateFile(ctx: *Context, template_path: []const u8) ![]u8 {
+    var file = ctx.cwd.openFile(template_path, .{}) catch return error.FileNotFound;
+    defer file.close();
+    return file.readAll(ctx.allocator);
 }
 
 fn writeGitignore(ctx: *Context) !void {

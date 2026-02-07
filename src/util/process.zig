@@ -45,7 +45,7 @@ pub const ProcessOptions = struct {
     /// Working directory for the process.
     cwd: ?[]const u8 = null,
     /// Environment variables (null means inherit).
-    env: ?*const std.process.EnvMap = null,
+    env: ?*const std.StringHashMap([]const u8) = null,
     /// Maximum time to wait in milliseconds (0 = no timeout).
     timeout_ms: u64 = 0,
     /// Maximum stdout buffer size.
@@ -94,19 +94,19 @@ pub fn run(
     }
 
     // Read stdout and stderr
-    var stdout_list = std.ArrayList(u8).init(allocator);
-    defer stdout_list.deinit();
-    var stderr_list = std.ArrayList(u8).init(allocator);
-    defer stderr_list.deinit();
+    var stdout_list: std.ArrayList(u8) = .empty;
+    defer stdout_list.deinit(allocator);
+    var stderr_list: std.ArrayList(u8) = .empty;
+    defer stderr_list.deinit(allocator);
 
     // Use collectOutput for simpler handling
-    child.collectOutput(&stdout_list, &stderr_list, options.max_stdout, options.max_stderr);
+    child.collectOutput(allocator, &stdout_list, &stderr_list, options.max_stdout, options.max_stderr);
 
     const term = try child.wait();
 
-    const stdout = try stdout_list.toOwnedSlice();
+    const stdout = try stdout_list.toOwnedSlice(allocator);
     errdefer allocator.free(stdout);
-    const stderr = try stderr_list.toOwnedSlice();
+    const stderr = try stderr_list.toOwnedSlice(allocator);
 
     return ProcessResult{
         .exit_code = switch (term) {
@@ -292,7 +292,7 @@ pub const ProcessBuilder = struct {
     pub fn init(allocator: Allocator) ProcessBuilder {
         return .{
             .allocator = allocator,
-            .argv = std.ArrayList([]const u8).init(allocator),
+            .argv = .empty,
             .options = .{},
         };
     }
@@ -301,11 +301,11 @@ pub const ProcessBuilder = struct {
         for (self.argv.items) |item| {
             self.allocator.free(item);
         }
-        self.argv.deinit();
+        self.argv.deinit(self.allocator);
     }
 
     pub fn arg(self: *ProcessBuilder, value: []const u8) !*ProcessBuilder {
-        try self.argv.append(try self.allocator.dupe(u8, value));
+        try self.argv.append(self.allocator, try self.allocator.dupe(u8, value));
         return self;
     }
 

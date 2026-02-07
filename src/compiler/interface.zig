@@ -463,7 +463,7 @@ pub const CompileOptions = struct {
     /// Working directory
     cwd: ?[]const u8 = null,
     /// Environment variables
-    env: ?std.process.EnvMap = null,
+    env: ?std.StringHashMap([]const u8) = null,
 };
 
 /// Link options

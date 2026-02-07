@@ -224,7 +224,7 @@ pub const Emscripten = struct {
     pub fn compileWithWasm(self: *Self, allocator: Allocator, options: CompileOptions, wasm: WasmSettings) !CompileResult {
         const start_time = std.time.nanoTimestamp();
 
-        var args = std.ArrayList([]const u8).init(allocator);
+        var args = std.ArrayList([]const u8).empty;
         defer args.deinit();
 
         // Select compiler
@@ -371,7 +371,7 @@ pub const Emscripten = struct {
     pub fn linkWithWasm(self: *Self, allocator: Allocator, options: LinkOptions, wasm: WasmSettings) !LinkResult {
         const start_time = std.time.nanoTimestamp();
 
-        var args = std.ArrayList([]const u8).init(allocator);
+        var args = std.ArrayList([]const u8).empty;
         defer args.deinit();
 
         // Use em++ for linking (C++ runtime support)

@@ -63,6 +63,24 @@ pub fn maxLayerSize(layer_sizes: []const usize) usize {
     return max_size;
 }
 
+/// Layer information structure (for introspection).
+pub const Layer = struct {
+    input_size: usize,
+    output_size: usize,
+    weight_start: usize,
+    bias_start: usize,
+};
+
+/// Get layer information for a specific layer index.
+pub fn getLayerInfo(layer_sizes: []const usize, layer_index: usize) Layer {
+    return .{
+        .input_size = layer_sizes[layer_index],
+        .output_size = layer_sizes[layer_index + 1],
+        .weight_start = startWeight(layer_sizes, layer_index),
+        .bias_start = startBias(layer_sizes, layer_index),
+    };
+}
+
 test "layer offsets" {
     const sizes = [_]usize{ 2, 4, 4, 1 };
     try std.testing.expectEqual(@as(usize, 0), startWeight(&sizes, 0));
@@ -75,4 +93,17 @@ test "layer offsets" {
 
     try std.testing.expectEqual(@as(usize, 2 * 4 + 4 * 4 + 4 * 1), totalWeightCount(&sizes));
     try std.testing.expectEqual(@as(usize, 4 + 4 + 1), totalBiasCount(&sizes));
+}
+
+test "max layer size" {
+    const sizes = [_]usize{ 2, 8, 4, 1 };
+    try std.testing.expectEqual(@as(usize, 8), maxLayerSize(&sizes));
+}
+
+test "weight and bias counts" {
+    const sizes = [_]usize{ 3, 5, 2 };
+    try std.testing.expectEqual(@as(usize, 15), weightCount(&sizes, 0)); // 3*5
+    try std.testing.expectEqual(@as(usize, 10), weightCount(&sizes, 1)); // 5*2
+    try std.testing.expectEqual(@as(usize, 5), biasCount(&sizes, 0));
+    try std.testing.expectEqual(@as(usize, 2), biasCount(&sizes, 1));
 }

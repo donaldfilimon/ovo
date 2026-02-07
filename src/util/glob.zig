@@ -73,7 +73,7 @@ pub const Pattern = struct {
 
 /// Compile a glob pattern for repeated use.
 pub fn compile(allocator: Allocator, pattern: []const u8) !Pattern {
-    var segments = std.ArrayList(Pattern.Segment).init(allocator);
+    var segments: std.ArrayList(Pattern.Segment) = .empty;
     errdefer {
         for (segments.items) |seg| {
             switch (seg) {
@@ -85,7 +85,7 @@ pub fn compile(allocator: Allocator, pattern: []const u8) !Pattern {
                 else => {},
             }
         }
-        segments.deinit();
+        segments.deinit(allocator);
     }
 
     var i: usize = 0;
@@ -98,39 +98,39 @@ pub fn compile(allocator: Allocator, pattern: []const u8) !Pattern {
             '*' => {
                 // Flush literal
                 if (literal_start) |start| {
-                    try segments.append(.{ .literal = try allocator.dupe(u8, pattern[start..i]) });
+                    try segments.append(allocator, .{ .literal = try allocator.dupe(u8, pattern[start..i]) });
                     literal_start = null;
                 }
 
                 // Check for **
                 if (i + 1 < pattern.len and pattern[i + 1] == '*') {
-                    try segments.append(.recursive);
+                    try segments.append(allocator, .recursive);
                     i += 2;
                     // Skip trailing / if present
                     if (i < pattern.len and (pattern[i] == '/' or pattern[i] == '\\')) {
                         i += 1;
                     }
                 } else {
-                    try segments.append(.any_sequence);
+                    try segments.append(allocator, .any_sequence);
                     i += 1;
                 }
             },
             '?' => {
                 if (literal_start) |start| {
-                    try segments.append(.{ .literal = try allocator.dupe(u8, pattern[start..i]) });
+                    try segments.append(allocator, .{ .literal = try allocator.dupe(u8, pattern[start..i]) });
                     literal_start = null;
                 }
-                try segments.append(.any_char);
+                try segments.append(allocator, .any_char);
                 i += 1;
             },
             '[' => {
                 if (literal_start) |start| {
-                    try segments.append(.{ .literal = try allocator.dupe(u8, pattern[start..i]) });
+                    try segments.append(allocator, .{ .literal = try allocator.dupe(u8, pattern[start..i]) });
                     literal_start = null;
                 }
 
                 const cc = try parseCharClass(allocator, pattern[i..]);
-                try segments.append(.{ .char_class = cc.class });
+                try segments.append(allocator, .{ .char_class = cc.class });
                 i += cc.consumed;
             },
             '\\' => {
@@ -158,11 +158,11 @@ pub fn compile(allocator: Allocator, pattern: []const u8) !Pattern {
 
     // Flush remaining literal
     if (literal_start) |start| {
-        try segments.append(.{ .literal = try allocator.dupe(u8, pattern[start..]) });
+        try segments.append(allocator, .{ .literal = try allocator.dupe(u8, pattern[start..]) });
     }
 
     return Pattern{
-        .segments = try segments.toOwnedSlice(),
+        .segments = try segments.toOwnedSlice(allocator),
         .allocator = allocator,
         .original = try allocator.dupe(u8, pattern),
     };
@@ -178,10 +178,10 @@ fn parseCharClass(allocator: Allocator, pattern: []const u8) !CharClassResult {
         return GlobError.InvalidPattern;
     }
 
-    var chars = std.ArrayList(u8).init(allocator);
-    errdefer chars.deinit();
-    var ranges = std.ArrayList([2]u8).init(allocator);
-    errdefer ranges.deinit();
+    var chars: std.ArrayList(u8) = .empty;
+    errdefer chars.deinit(allocator);
+    var ranges: std.ArrayList([2]u8) = .empty;
+    errdefer ranges.deinit(allocator);
 
     var i: usize = 1;
     var negated = false;
@@ -194,7 +194,7 @@ fn parseCharClass(allocator: Allocator, pattern: []const u8) !CharClassResult {
 
     // Special case: ] as first char is literal
     if (i < pattern.len and pattern[i] == ']') {
-        try chars.append(']');
+        try chars.append(allocator, ']');
         i += 1;
     }
 
@@ -204,8 +204,8 @@ fn parseCharClass(allocator: Allocator, pattern: []const u8) !CharClassResult {
         if (c == ']') {
             return CharClassResult{
                 .class = .{
-                    .chars = try chars.toOwnedSlice(),
-                    .ranges = try ranges.toOwnedSlice(),
+                    .chars = try chars.toOwnedSlice(allocator),
+                    .ranges = try ranges.toOwnedSlice(allocator),
                     .negated = negated,
                 },
                 .consumed = i + 1,
@@ -219,10 +219,10 @@ fn parseCharClass(allocator: Allocator, pattern: []const u8) !CharClassResult {
             if (start > end) {
                 return GlobError.InvalidRange;
             }
-            try ranges.append(.{ start, end });
+            try ranges.append(allocator, .{ start, end });
             i += 3;
         } else {
-            try chars.append(c);
+            try chars.append(allocator, c);
             i += 1;
         }
     }
@@ -449,16 +449,16 @@ pub fn filter(
     paths: []const []const u8,
     pattern: []const u8,
 ) ![][]const u8 {
-    var results = std.ArrayList([]const u8).init(allocator);
-    errdefer results.deinit();
+    var results: std.ArrayList([]const u8) = .empty;
+    errdefer results.deinit(allocator);
 
     for (paths) |path| {
         if (match(pattern, path)) {
-            try results.append(path);
+            try results.append(allocator, path);
         }
     }
 
-    return results.toOwnedSlice();
+    return results.toOwnedSlice(allocator);
 }
 
 /// Check if a string contains glob metacharacters.

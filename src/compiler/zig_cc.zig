@@ -96,7 +96,7 @@ pub const ZigCC = struct {
     pub fn compile(self: *Self, allocator: Allocator, options: CompileOptions) !CompileResult {
         const start_time = std.time.nanoTimestamp();
 
-        var args = std.ArrayList([]const u8).init(allocator);
+        var args = std.ArrayList([]const u8).empty;
         defer args.deinit();
 
         // Base command
@@ -260,7 +260,7 @@ pub const ZigCC = struct {
     pub fn link(self: *Self, allocator: Allocator, options: LinkOptions) !LinkResult {
         const start_time = std.time.nanoTimestamp();
 
-        var args = std.ArrayList([]const u8).init(allocator);
+        var args = std.ArrayList([]const u8).empty;
         defer args.deinit();
 
         try args.append(self.zig_path);
@@ -405,7 +405,7 @@ pub const ZigCC = struct {
         const scan_result = try modules.scanModuleDeclarations(allocator, source);
 
         // Also try clang's dependency scanning if available
-        var args = std.ArrayList([]const u8).init(allocator);
+        var args = std.ArrayList([]const u8).empty;
         defer args.deinit();
 
         try args.append(self.zig_path);
@@ -447,7 +447,7 @@ pub const ZigCC = struct {
     pub fn compileModuleInterface(self: *Self, allocator: Allocator, source_path: []const u8, output_bmi: []const u8, options: CompileOptions) !CompileResult {
         const start_time = std.time.nanoTimestamp();
 
-        var args = std.ArrayList([]const u8).init(allocator);
+        var args = std.ArrayList([]const u8).empty;
         defer args.deinit();
 
         try args.append(self.zig_path);

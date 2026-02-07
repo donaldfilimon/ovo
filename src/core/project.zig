@@ -137,9 +137,9 @@ pub const Version = struct {
 
     /// Writes the version to a buffer.
     pub fn toString(self: Self, buf: []u8) []u8 {
-        var fbs = std.io.fixedBufferStream(buf);
-        self.format("", .{}, fbs.writer()) catch {};
-        return fbs.getWritten();
+        var writer = std.Io.Writer.fixed(buf);
+        self.format("", .{}, &writer) catch {};
+        return buf[0..writer.end];
     }
 
     /// Compares two versions (ignoring build metadata per semver spec).

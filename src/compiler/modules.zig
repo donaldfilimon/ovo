@@ -70,16 +70,18 @@ const GraphNode = struct {
     unit: *ModuleUnit,
     edges: std.ArrayList(*GraphNode),
     in_degree: usize = 0,
+    allocator: Allocator,
 
     fn init(allocator: Allocator, unit: *ModuleUnit) GraphNode {
         return .{
             .unit = unit,
-            .edges = std.ArrayList(*GraphNode).init(allocator),
+            .edges = .empty,
+            .allocator = allocator,
         };
     }
 
     fn deinit(self: *GraphNode) void {
-        self.edges.deinit();
+        self.edges.deinit(self.allocator);
     }
 };
 
@@ -102,10 +104,10 @@ pub const ModuleGraph = struct {
     pub fn init(allocator: Allocator, cache_dir: []const u8) ModuleGraph {
         return .{
             .allocator = allocator,
-            .units = std.ArrayList(ModuleUnit).init(allocator),
+            .units = .empty,
             .module_map = std.StringHashMap(*ModuleUnit).init(allocator),
             .source_map = std.StringHashMap(*ModuleUnit).init(allocator),
-            .nodes = std.ArrayList(GraphNode).init(allocator),
+            .nodes = .empty,
             .node_map = std.AutoHashMap(*ModuleUnit, *GraphNode).init(allocator),
             .cache_dir = cache_dir,
         };
@@ -115,7 +117,7 @@ pub const ModuleGraph = struct {
         for (self.nodes.items) |*node| {
             node.deinit();
         }
-        self.nodes.deinit();
+        self.nodes.deinit(self.allocator);
         self.node_map.deinit();
 
         for (self.units.items) |*unit| {
@@ -131,14 +133,14 @@ pub const ModuleGraph = struct {
             if (unit.bmi_path) |p| self.allocator.free(p);
             if (unit.object_path) |p| self.allocator.free(p);
         }
-        self.units.deinit();
+        self.units.deinit(self.allocator);
         self.module_map.deinit();
         self.source_map.deinit();
     }
 
     /// Add a module unit to the graph
     pub fn addUnit(self: *ModuleGraph, unit: ModuleUnit) !*ModuleUnit {
-        try self.units.append(unit);
+        try self.units.append(self.allocator, unit);
         const unit_ptr = &self.units.items[self.units.items.len - 1];
 
         // Register in maps
@@ -165,7 +167,7 @@ pub const ModuleGraph = struct {
         // Create nodes for all units
         for (self.units.items) |*unit| {
             const node = GraphNode.init(self.allocator, unit);
-            try self.nodes.append(node);
+            try self.nodes.append(self.allocator, node);
         }
 
         // Update node map with stable pointers
@@ -492,8 +494,8 @@ pub fn scanModuleDeclarations(allocator: Allocator, source: []const u8) !struct 
     dependencies: []ModuleDependency,
 } {
     var provides: ?[]const u8 = null;
-    var deps = std.ArrayList(ModuleDependency).init(allocator);
-    errdefer deps.deinit();
+    var deps: std.ArrayList(ModuleDependency) = .empty;
+    errdefer deps.deinit(allocator);
 
     var lines = std.mem.splitScalar(u8, source, '\n');
     while (lines.next()) |line| {
@@ -546,7 +548,7 @@ pub fn scanModuleDeclarations(allocator: Allocator, source: []const u8) !struct 
 
                 const is_std = std.mem.startsWith(u8, name, "std");
 
-                try deps.append(.{
+                try deps.append(allocator, .{
                     .name = try allocator.dupe(u8, name),
                     .kind = kind,
                     .is_std = is_std,
@@ -557,16 +559,16 @@ pub fn scanModuleDeclarations(allocator: Allocator, source: []const u8) !struct 
 
     return .{
         .provides = provides,
-        .dependencies = try deps.toOwnedSlice(),
+        .dependencies = try deps.toOwnedSlice(allocator),
     };
 }
 
 /// Discover all module files in a directory
 pub fn discoverModuleFiles(allocator: Allocator, root_dir: []const u8) ![]const []const u8 {
-    var files = std.ArrayList([]const u8).init(allocator);
+    var files: std.ArrayList([]const u8) = .empty;
     errdefer {
         for (files.items) |f| allocator.free(f);
-        files.deinit();
+        files.deinit(allocator);
     }
 
     var dir = try std.fs.cwd().openDir(root_dir, .{ .iterate = true });

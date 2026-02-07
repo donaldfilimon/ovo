@@ -213,17 +213,17 @@ pub const Client = struct {
         }
 
         // Read body
-        var body_list = std.ArrayList(u8).init(self.allocator);
-        defer body_list.deinit();
+        var body_list: std.ArrayList(u8) = .empty;
+        defer body_list.deinit(self.allocator);
 
         var buf: [8192]u8 = undefined;
         while (true) {
             const n = try req.reader().read(&buf);
             if (n == 0) break;
-            try body_list.appendSlice(buf[0..n]);
+            try body_list.appendSlice(self.allocator, buf[0..n]);
         }
 
-        response.body = try body_list.toOwnedSlice();
+        response.body = try body_list.toOwnedSlice(self.allocator);
 
         return response;
     }
@@ -340,36 +340,36 @@ pub const UrlBuilder = struct {
     pub fn init(allocator: Allocator) Self {
         return .{
             .allocator = allocator,
-            .buffer = std.ArrayList(u8).init(allocator),
+            .buffer = .empty,
         };
     }
 
     pub fn deinit(self: *Self) void {
-        self.buffer.deinit();
+        self.buffer.deinit(self.allocator);
     }
 
     pub fn setBase(self: *Self, base: []const u8) !*Self {
         self.buffer.clearRetainingCapacity();
-        try self.buffer.appendSlice(base);
+        try self.buffer.appendSlice(self.allocator, base);
         return self;
     }
 
     pub fn addPath(self: *Self, segment: []const u8) !*Self {
         // Ensure single slash separator
         if (self.buffer.items.len > 0 and self.buffer.items[self.buffer.items.len - 1] != '/') {
-            try self.buffer.append('/');
+            try self.buffer.append(self.allocator, '/');
         }
 
         const start: usize = if (segment.len > 0 and segment[0] == '/') 1 else 0;
-        try self.buffer.appendSlice(segment[start..]);
+        try self.buffer.appendSlice(self.allocator, segment[start..]);
         return self;
     }
 
     pub fn addQuery(self: *Self, key: []const u8, value: []const u8) !*Self {
         const sep: u8 = if (std.mem.indexOf(u8, self.buffer.items, "?") == null) '?' else '&';
-        try self.buffer.append(sep);
+        try self.buffer.append(self.allocator, sep);
         try self.appendEncoded(key);
-        try self.buffer.append('=');
+        try self.buffer.append(self.allocator, '=');
         try self.appendEncoded(value);
         return self;
     }
@@ -377,12 +377,12 @@ pub const UrlBuilder = struct {
     fn appendEncoded(self: *Self, str: []const u8) !void {
         for (str) |c| {
             if (std.ascii.isAlphanumeric(c) or c == '-' or c == '_' or c == '.' or c == '~') {
-                try self.buffer.append(c);
+                try self.buffer.append(self.allocator, c);
             } else {
-                try self.buffer.append('%');
+                try self.buffer.append(self.allocator, '%');
                 const hex = "0123456789ABCDEF";
-                try self.buffer.append(hex[c >> 4]);
-                try self.buffer.append(hex[c & 0x0F]);
+                try self.buffer.append(self.allocator, hex[c >> 4]);
+                try self.buffer.append(self.allocator, hex[c & 0x0F]);
             }
         }
     }
@@ -392,7 +392,7 @@ pub const UrlBuilder = struct {
     }
 
     pub fn buildOwned(self: *Self) ![]u8 {
-        return self.buffer.toOwnedSlice();
+        return self.buffer.toOwnedSlice(self.allocator);
     }
 };
 

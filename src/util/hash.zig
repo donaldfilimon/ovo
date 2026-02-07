@@ -68,7 +68,7 @@ pub const Digest = struct {
         for (0..expected_len) |i| {
             const high = hexCharToNibble(hex[i * 2]) orelse return error.InvalidHexChar;
             const low = hexCharToNibble(hex[i * 2 + 1]) orelse return error.InvalidHexChar;
-            digest.bytes[i] = (high << 4) | low;
+            digest.bytes[i] = (@as(u8, high) << 4) | @as(u8, low);
         }
 
         return digest;

@@ -6,6 +6,7 @@
 const std = @import("std");
 const commands = @import("commands.zig");
 const build_cmd = @import("build_cmd.zig");
+const zon = @import("zon");
 
 // C library function for execution
 extern "c" fn system(command: [*:0]const u8) c_int;
@@ -107,12 +108,26 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
         }
     }
 
-    // Construct executable path
+    // Construct executable path: build/{profile}/bin/{target}
     var exe_path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const build_dir = if (release) "build/release" else "build/debug";
-    const exe_name = target orelse "main";
+    var default_name_buf: [256]u8 = undefined;
+    const exe_name = target orelse blk: {
+        // Parse build.zon to get first executable target
+        var project = zon.parser.parseFile(ctx.allocator, "build.zon") catch break :blk "main";
+        defer project.deinit(ctx.allocator);
+        for (project.targets) |t| {
+            if (t.target_type == .executable) {
+                const len = @min(t.name.len, default_name_buf.len - 1);
+                @memcpy(default_name_buf[0..len], t.name[0..len]);
+                default_name_buf[len] = 0;
+                break :blk default_name_buf[0..len];
+            }
+        }
+        break :blk "main";
+    };
 
-    const exe_path = std.fmt.bufPrint(&exe_path_buf, "{s}/{s}", .{ build_dir, exe_name }) catch {
+    const exe_path = std.fmt.bufPrint(&exe_path_buf, "{s}/bin/{s}", .{ build_dir, exe_name }) catch {
         try ctx.stderr.err("error: ", .{});
         try ctx.stderr.print("path too long\n", .{});
         return 1;

@@ -68,7 +68,7 @@ pub const CompilerDetector = struct {
     pub fn init(allocator: Allocator) Self {
         return .{
             .allocator = allocator,
-            .detected = std.ArrayList(DetectedCompiler).init(allocator),
+            .detected = .empty,
             .cached_compilers = std.AutoHashMap(CompilerKind, Compiler).init(allocator),
         };
     }
@@ -85,7 +85,7 @@ pub const CompilerDetector = struct {
         for (self.detected.items) |*d| {
             d.deinit(self.allocator);
         }
-        self.detected.deinit();
+        self.detected.deinit(self.allocator);
     }
 
     /// Detect all available compilers
@@ -96,29 +96,29 @@ pub const CompilerDetector = struct {
 
         // 1. Zig CC (always available if ovo is installed)
         if (self.tryDetectZigCC()) |detected| {
-            try self.detected.append(detected);
+            try self.detected.append(self.allocator, detected);
         }
 
         // 2. System Clang (best C++ modules support)
         if (self.tryDetectClang()) |detected| {
-            try self.detected.append(detected);
+            try self.detected.append(self.allocator, detected);
         }
 
         // 3. GCC (widely available)
         if (self.tryDetectGCC()) |detected| {
-            try self.detected.append(detected);
+            try self.detected.append(self.allocator, detected);
         }
 
         // 4. MSVC (Windows only)
         if (@import("builtin").os.tag == .windows) {
             if (self.tryDetectMSVC()) |detected| {
-                try self.detected.append(detected);
+                try self.detected.append(self.allocator, detected);
             }
         }
 
         // 5. Emscripten (for WebAssembly)
         if (self.tryDetectEmscripten()) |detected| {
-            try self.detected.append(detected);
+            try self.detected.append(self.allocator, detected);
         }
 
         // Sort by priority

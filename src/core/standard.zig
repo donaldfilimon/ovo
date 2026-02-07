@@ -496,14 +496,14 @@ test "LanguageStandard.parse" {
 
 test "CStandard format" {
     var buf: [16]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    try CStandard.c17.format("", .{}, fbs.writer());
-    try testing.expectEqualStrings("c17", fbs.getWritten());
+    var writer = std.Io.Writer.fixed(&buf);
+    try CStandard.c17.format("", .{}, &writer);
+    try testing.expectEqualStrings("c17", buf[0..writer.end]);
 }
 
 test "CppStandard format" {
     var buf: [16]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    try CppStandard.gnucpp20.format("", .{}, fbs.writer());
-    try testing.expectEqualStrings("gnu++20", fbs.getWritten());
+    var writer = std.Io.Writer.fixed(&buf);
+    try CppStandard.gnucpp20.format("", .{}, &writer);
+    try testing.expectEqualStrings("gnu++20", buf[0..writer.end]);
 }
