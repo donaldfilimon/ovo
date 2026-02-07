@@ -5,6 +5,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ChildProcess = std.process.Child;
+const compat = @import("compat.zig");
 
 /// Error types for process operations.
 pub const ProcessError = error{
@@ -260,7 +261,7 @@ pub fn execOutput(allocator: Allocator, argv: []const []const u8) ![]u8 {
 
 /// Get the path to an executable in PATH.
 pub fn which(allocator: Allocator, name: []const u8) !?[]u8 {
-    const path_env = std.posix.getenv("PATH") orelse return null;
+    const path_env = compat.getenv("PATH") orelse return null;
     var path_iter = std.mem.splitScalar(u8, path_env, ':');
 
     while (path_iter.next()) |dir| {

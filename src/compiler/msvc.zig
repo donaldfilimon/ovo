@@ -7,6 +7,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const interface = @import("interface.zig");
 const modules = @import("modules.zig");
+const compat = @import("util").compat;
 
 const Compiler = interface.Compiler;
 const CompileOptions = interface.CompileOptions;
@@ -723,7 +724,7 @@ fn findMSVC(allocator: Allocator) !struct {
     }
 
     // Fallback: Check PATH
-    if (std.posix.getenv("PATH")) |path_env| {
+    if (compat.getenv("PATH")) |path_env| {
         var paths = std.mem.splitScalar(u8, path_env, ';');
         while (paths.next()) |dir| {
             const cl_path = try std.fs.path.join(allocator, &.{ dir, "cl.exe" });

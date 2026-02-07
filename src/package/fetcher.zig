@@ -8,6 +8,7 @@ const Allocator = std.mem.Allocator;
 const fs = std.fs;
 const json = std.json;
 const integrity = @import("integrity.zig");
+const compat = @import("util").compat;
 const lockfile = @import("lockfile.zig");
 const resolver = @import("resolver.zig");
 
@@ -639,12 +640,12 @@ pub const Fetcher = struct {
 
     fn getVcpkgRoot(self: *Fetcher) ![]const u8 {
         // Check VCPKG_ROOT environment variable
-        if (std.posix.getenv("VCPKG_ROOT")) |root| {
+        if (compat.getenv("VCPKG_ROOT")) |root| {
             return self.allocator.dupe(u8, root);
         }
 
         // Check common locations
-        const home = std.posix.getenv("HOME") orelse return error.FileNotFound;
+        const home = compat.getenv("HOME") orelse return error.FileNotFound;
         const vcpkg_path = std.fmt.allocPrint(self.allocator, "{s}/vcpkg", .{home}) catch return error.OutOfMemory;
 
         fs.cwd().access(vcpkg_path, .{}) catch {
@@ -670,11 +671,11 @@ pub const Fetcher = struct {
 
     fn getConanCache(self: *Fetcher) ![]const u8 {
         // Check CONAN_USER_HOME environment variable
-        if (std.posix.getenv("CONAN_USER_HOME")) |home| {
+        if (compat.getenv("CONAN_USER_HOME")) |home| {
             return std.fmt.allocPrint(self.allocator, "{s}/.conan/data", .{home});
         }
 
-        const home = std.posix.getenv("HOME") orelse return error.FileNotFound;
+        const home = compat.getenv("HOME") orelse return error.FileNotFound;
         return std.fmt.allocPrint(self.allocator, "{s}/.conan/data", .{home});
     }
 

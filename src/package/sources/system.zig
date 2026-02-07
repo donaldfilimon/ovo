@@ -6,6 +6,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const fs = std.fs;
+const compat = @import("util").compat;
 
 /// System-specific errors.
 pub const SystemError = error{
@@ -287,7 +288,7 @@ pub const SystemSource = struct {
         if (self.pkg_config_path) |p| return p;
 
         // Check PKG_CONFIG environment variable
-        if (std.posix.getenv("PKG_CONFIG")) |path| {
+        if (compat.getenv("PKG_CONFIG")) |path| {
             self.pkg_config_path = self.allocator.dupe(u8, path) catch return error.OutOfMemory;
             return self.pkg_config_path.?;
         }
@@ -443,16 +444,16 @@ pub const SystemSource = struct {
             upper_name[i] = std.ascii.toUpper(c);
         }
 
-        const include_var = std.fmt.allocPrint(self.allocator, "{s}_INCLUDE_DIR", .{upper_name}) catch
+        const include_var = std.fmt.allocPrintZ(self.allocator, "{s}_INCLUDE_DIR", .{upper_name}) catch
             return error.OutOfMemory;
         defer self.allocator.free(include_var);
 
-        const lib_var = std.fmt.allocPrint(self.allocator, "{s}_LIB_DIR", .{upper_name}) catch
+        const lib_var = std.fmt.allocPrintZ(self.allocator, "{s}_LIB_DIR", .{upper_name}) catch
             return error.OutOfMemory;
         defer self.allocator.free(lib_var);
 
-        const include_dir = std.posix.getenv(include_var);
-        const lib_dir = std.posix.getenv(lib_var);
+        const include_dir = compat.getenv(include_var);
+        const lib_dir = compat.getenv(lib_var);
 
         if (include_dir == null and lib_dir == null) {
             return error.LibraryNotFound;

@@ -7,6 +7,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const interface = @import("interface.zig");
 const modules = @import("modules.zig");
+const compat = @import("util").compat;
 
 const Compiler = interface.Compiler;
 const CompileOptions = interface.CompileOptions;
@@ -588,7 +589,7 @@ fn findEmscripten(allocator: Allocator) !struct {
 } {
     // Check EMSDK environment variable
     var emsdk_path: ?[]const u8 = null;
-    if (std.posix.getenv("EMSDK")) |emsdk| {
+    if (compat.getenv("EMSDK")) |emsdk| {
         emsdk_path = try allocator.dupe(u8, emsdk);
 
         // Try to find emcc in EMSDK
@@ -618,7 +619,7 @@ fn findEmscripten(allocator: Allocator) !struct {
     // Check PATH
     const names = [_][]const u8{"emcc"};
 
-    if (std.posix.getenv("PATH")) |path_env| {
+    if (compat.getenv("PATH")) |path_env| {
         const sep = if (@import("builtin").os.tag == .windows) ';' else ':';
         var paths = std.mem.splitScalar(u8, path_env, sep);
         while (paths.next()) |dir| {

@@ -7,6 +7,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const interface = @import("interface.zig");
 const modules = @import("modules.zig");
+const compat = @import("util").compat;
 
 const Compiler = interface.Compiler;
 const CompileOptions = interface.CompileOptions;
@@ -546,12 +547,12 @@ pub const ZigCC = struct {
 /// Find Zig executable path
 fn findZigPath(allocator: Allocator) ![]const u8 {
     // Check ZIG_PATH environment variable
-    if (std.posix.getenv("ZIG_PATH")) |path| {
+    if (compat.getenv("ZIG_PATH")) |path| {
         return allocator.dupe(u8, path);
     }
 
     // Check PATH
-    if (std.posix.getenv("PATH")) |path_env| {
+    if (compat.getenv("PATH")) |path_env| {
         var paths = std.mem.splitScalar(u8, path_env, ':');
         while (paths.next()) |dir| {
             const zig_path = try std.fs.path.join(allocator, &.{ dir, "zig" });

@@ -7,6 +7,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const interface = @import("interface.zig");
 const modules = @import("modules.zig");
+const compat = @import("util").compat;
 
 const Compiler = interface.Compiler;
 const CompileOptions = interface.CompileOptions;
@@ -673,7 +674,7 @@ pub const GCC = struct {
 fn findGCC(allocator: Allocator) ![]const u8 {
     const names = [_][]const u8{ "gcc-14", "gcc-13", "gcc-12", "gcc-11", "gcc" };
 
-    if (std.posix.getenv("PATH")) |path_env| {
+    if (compat.getenv("PATH")) |path_env| {
         var paths = std.mem.splitScalar(u8, path_env, ':');
         while (paths.next()) |dir| {
             for (names) |name| {
@@ -694,7 +695,7 @@ fn findGCC(allocator: Allocator) ![]const u8 {
 fn findGxx(allocator: Allocator) ![]const u8 {
     const names = [_][]const u8{ "g++-14", "g++-13", "g++-12", "g++-11", "g++" };
 
-    if (std.posix.getenv("PATH")) |path_env| {
+    if (compat.getenv("PATH")) |path_env| {
         var paths = std.mem.splitScalar(u8, path_env, ':');
         while (paths.next()) |dir| {
             for (names) |name| {
