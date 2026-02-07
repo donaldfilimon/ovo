@@ -54,8 +54,12 @@ Eliminate repeated patterns across `*_cmd.zig` files:
 
 ### Stream C: Zig 0.16 Compat Migration
 
-Migrate deprecated API calls (`std.fs.cwd()`, `std.posix.getenv()`) to Zig 0.16 alternatives
-across translate/, compiler/, util/, and package/ modules.
+Migrate deprecated API calls to Zig 0.16 alternatives. **True scope: ~140 calls across ~32 files:**
+- `std.fs.cwd()` — ~60 direct + ~60 via `const fs = std.fs; fs.cwd()` alias
+- `std.posix.getenv()` — ~20 calls across compiler/, package/, util/
+
+**Critical:** `compat.cwd()` returns `std.Io.Dir` but call sites expect `std.fs.Dir` — these are
+incompatible types. Do NOT attempt bulk find-and-replace. The compat layer needs expansion first.
 
 For migration procedures, patterns, and file-by-file status, load the **zig-016-patterns** skill.
 The migration checklist at `zig-016-patterns/references/migration-checklist.md` tracks progress.
@@ -73,11 +77,13 @@ Keep CLAUDE.md and memory files aligned with reality:
 
 ### Stream E: Stub Completion
 
-Replace placeholder implementations with real logic:
+Replace placeholder implementations with real logic. **Six stubs identified:**
 
-- `DirHandle.deleteTree()` — currently a no-op
-- `getDirSize()` — returns fake 1MB
-- Export `generate*` functions — don't write files yet
+- `DirHandle.deleteTree()` — currently a no-op (commands.zig:206)
+- `getDirSize()` — returns fake 1MB (clean_cmd.zig:206)
+- 5x `generate*()` — generate content string but don't write files (export_cmd.zig:220-359)
+- Tool detection — hardcoded compiler + tool availability (info_cmd.zig:170)
+- Import formats — Meson/Xcode/MSBuild show "not yet implemented" (import_cmd.zig:185-191)
 
 ### Stream F: Architecture
 
