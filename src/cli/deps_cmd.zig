@@ -5,6 +5,8 @@
 
 const std = @import("std");
 const commands = @import("commands.zig");
+const manifest = @import("manifest.zig");
+const zon_parser = @import("zon").parser;
 
 const Context = commands.Context;
 const TermWriter = commands.TermWriter;
@@ -82,35 +84,54 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
         }
     }
 
-    // Check for build.zon
-    const manifest_exists = blk: {
-        ctx.cwd.access("build.zon", .{}) catch break :blk false;
-        break :blk true;
-    };
-
-    if (!manifest_exists) {
+    // Parse build.zon
+    var project = zon_parser.parseFile(ctx.allocator, manifest.manifest_filename) catch |err| {
         try ctx.stderr.err("error: ", .{});
-        try ctx.stderr.print("no build.zon found in current directory\n", .{});
+        switch (err) {
+            error.FileNotFound => try ctx.stderr.print("no " ++ manifest.manifest_filename ++ " found in current directory\n", .{}),
+            else => try ctx.stderr.print("failed to parse " ++ manifest.manifest_filename ++ ": {}\n", .{err}),
+        }
         return 1;
+    };
+    defer project.deinit(ctx.allocator);
+
+    // Format project version string
+    const version_str = try std.fmt.allocPrint(ctx.allocator, "{d}.{d}.{d}", .{
+        project.version.major,
+        project.version.minor,
+        project.version.patch,
+    });
+    defer ctx.allocator.free(version_str);
+
+    // Build DepNode array from parsed dependencies
+    var nodes_list: std.ArrayListUnmanaged(DepNode) = .empty;
+    defer nodes_list.deinit(ctx.allocator);
+
+    if (project.dependencies) |deps| {
+        for (deps) |dep| {
+            const source_str: []const u8 = switch (dep.source) {
+                .git => "git",
+                .url => "url",
+                .path => "path",
+                .vcpkg => "vcpkg",
+                .conan => "conan",
+                .system => "system",
+            };
+            try nodes_list.append(ctx.allocator, .{
+                .name = dep.name,
+                .version = "latest",
+                .source = source_str,
+                .is_dev = false,
+                .children = &.{},
+            });
+        }
     }
 
-    // Simulated dependency tree
-    const spdlog_deps = [_]DepNode{
-        .{ .name = "fmt", .version = "10.1.1", .source = "registry", .is_dev = false, .children = &.{} },
-    };
-
-    const catch2_deps = [_]DepNode{};
-
-    const root_deps = [_]DepNode{
-        .{ .name = "fmt", .version = "10.1.1", .source = "registry", .is_dev = false, .children = &.{} },
-        .{ .name = "spdlog", .version = "1.12.0", .source = "registry", .is_dev = false, .children = &spdlog_deps },
-        .{ .name = "nlohmann_json", .version = "3.11.2", .source = "registry", .is_dev = false, .children = &.{} },
-        .{ .name = "catch2", .version = "3.4.0", .source = "registry", .is_dev = true, .children = &catch2_deps },
-    };
+    const root_deps = nodes_list.items;
 
     // Handle --why query
     if (why_pkg) |pkg| {
-        return showWhyPackage(ctx, pkg, &root_deps);
+        return showWhyPackage(ctx, pkg, root_deps, project.name);
     }
 
     // JSON output
@@ -132,12 +153,12 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
 
     // Flat list
     if (flat) {
-        return showFlatList(ctx, &root_deps, include_dev);
+        return showFlatList(ctx, root_deps, include_dev);
     }
 
     // Tree view
-    try ctx.stdout.success("myproject", .{});
-    try ctx.stdout.dim(" v1.0.0\n", .{});
+    try ctx.stdout.success("{s}", .{project.name});
+    try ctx.stdout.dim(" v{s}\n", .{version_str});
 
     var total_deps: u32 = 0;
     var dev_deps: u32 = 0;
@@ -172,7 +193,7 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
     if (show_duplicates) {
         try ctx.stdout.print("\n", .{});
         try ctx.stdout.bold("Duplicates:\n", .{});
-        try ctx.stdout.dim("  fmt v10.1.1 (2 references)\n", .{});
+        try ctx.stdout.dim("  (no transitive dependencies resolved yet)\n", .{});
     }
 
     return 0;
@@ -295,47 +316,29 @@ fn collectChildren(
     }
 }
 
-fn showWhyPackage(ctx: *Context, pkg: []const u8, deps: []const DepNode) !u8 {
+fn showWhyPackage(ctx: *Context, pkg: []const u8, deps: []const DepNode, project_name: []const u8) !u8 {
     try ctx.stdout.bold("Why is '{s}' included?\n\n", .{pkg});
 
-    // Simulated dependency path
-    if (std.mem.eql(u8, pkg, "fmt")) {
-        try ctx.stdout.print("  myproject\n", .{});
-        try ctx.stdout.dim("    |\n", .{});
-        try ctx.stdout.print("    +- ", .{});
-        try ctx.stdout.success("fmt", .{});
-        try ctx.stdout.dim(" v10.1.1 (direct dependency)\n", .{});
-        try ctx.stdout.print("\n", .{});
-        try ctx.stdout.print("  myproject\n", .{});
-        try ctx.stdout.dim("    |\n", .{});
-        try ctx.stdout.print("    +- spdlog v1.12.0\n", .{});
-        try ctx.stdout.dim("        |\n", .{});
-        try ctx.stdout.print("        +- ", .{});
-        try ctx.stdout.success("fmt", .{});
-        try ctx.stdout.dim(" v10.1.1 (transitive)\n", .{});
-    } else {
-        // Search for package
-        var found = false;
-        for (deps) |dep| {
-            if (std.mem.eql(u8, dep.name, pkg)) {
-                found = true;
-                try ctx.stdout.print("  myproject\n", .{});
-                try ctx.stdout.dim("    |\n", .{});
-                try ctx.stdout.print("    +- ", .{});
-                try ctx.stdout.success("{s}", .{dep.name});
-                try ctx.stdout.dim(" v{s}", .{dep.version});
-                if (dep.is_dev) {
-                    try ctx.stdout.warn(" (dev)", .{});
-                }
-                try ctx.stdout.print("\n", .{});
-                break;
+    var found = false;
+    for (deps) |dep| {
+        if (std.mem.eql(u8, dep.name, pkg)) {
+            found = true;
+            try ctx.stdout.print("  {s}\n", .{project_name});
+            try ctx.stdout.dim("    |\n", .{});
+            try ctx.stdout.print("    +- ", .{});
+            try ctx.stdout.success("{s}", .{dep.name});
+            try ctx.stdout.dim(" v{s} (direct dependency)", .{dep.version});
+            if (dep.is_dev) {
+                try ctx.stdout.warn(" (dev)", .{});
             }
+            try ctx.stdout.print("\n", .{});
+            break;
         }
+    }
 
-        if (!found) {
-            try ctx.stdout.warn("Package '{s}' not found in dependency tree.\n", .{pkg});
-            return 1;
-        }
+    if (!found) {
+        try ctx.stdout.warn("Package '{s}' not found in dependency tree.\n", .{pkg});
+        return 1;
     }
 
     return 0;

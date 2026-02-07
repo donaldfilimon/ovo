@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const commands = @import("commands.zig");
+const manifest = @import("manifest.zig");
 
 const Context = commands.Context;
 const TermWriter = commands.TermWriter;
@@ -68,13 +69,13 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
 
     // Check for build.zon (optional for clean)
     const manifest_exists = blk: {
-        ctx.cwd.access("build.zon", .{}) catch break :blk false;
+        ctx.cwd.access(manifest.manifest_filename, .{}) catch break :blk false;
         break :blk true;
     };
 
     if (!manifest_exists) {
         try ctx.stderr.warn("warning: ", .{});
-        try ctx.stderr.print("no build.zon found, cleaning anyway\n", .{});
+        try ctx.stderr.print("no {s} found, cleaning anyway\n", .{manifest.manifest_filename});
     }
 
     if (dry_run) {

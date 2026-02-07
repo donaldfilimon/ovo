@@ -5,6 +5,9 @@
 
 const std = @import("std");
 const commands = @import("commands.zig");
+const manifest = @import("manifest.zig");
+const zon = @import("zon");
+const zon_parser = zon.parser;
 
 const Context = commands.Context;
 const TermWriter = commands.TermWriter;
@@ -146,13 +149,13 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
 
     // Check for build.zon
     const manifest_exists = blk: {
-        ctx.cwd.access("build.zon", .{}) catch break :blk false;
+        ctx.cwd.access(manifest.manifest_filename, .{}) catch break :blk false;
         break :blk true;
     };
 
     if (!manifest_exists) {
         try ctx.stderr.err("error: ", .{});
-        try ctx.stderr.print("no build.zon found in current directory\n", .{});
+        try ctx.stderr.print("no {s} found in current directory\n", .{manifest.manifest_filename});
         return 1;
     }
 
@@ -164,19 +167,35 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
     try ctx.stdout.success("*", .{});
     try ctx.stdout.print(" Reading build.zon...\n", .{});
 
-    // Simulated project data
-    const project_name = "myproject";
-    const project_version = "1.0.0";
+    var project = zon_parser.parseFile(ctx.allocator, manifest.manifest_filename) catch |err| {
+        try ctx.stderr.err("error: ", .{});
+        try ctx.stderr.print("failed to parse {s}: {}\n", .{ manifest.manifest_filename, err });
+        return 1;
+    };
+    defer project.deinit(ctx.allocator);
+
+    const project_name = project.name;
+    const project_version = try std.fmt.allocPrint(ctx.allocator, "{d}.{d}.{d}", .{
+        project.version.major,
+        project.version.minor,
+        project.version.patch,
+    });
+    defer ctx.allocator.free(project_version);
 
     // Phase 2: Generate output
     try ctx.stdout.print("  ", .{});
     try ctx.stdout.success("*", .{});
     try ctx.stdout.print(" Generating {s}...\n", .{fmt.outputFile()});
 
+    const output_path_owned = if (std.mem.eql(u8, output_dir, "."))
+        false
+    else
+        true;
     const output_path = if (std.mem.eql(u8, output_dir, "."))
         fmt.outputFile()
     else
         try std.fmt.allocPrint(ctx.allocator, "{s}/{s}", .{ output_dir, fmt.outputFile() });
+    defer if (output_path_owned) ctx.allocator.free(output_path);
 
     // Generate format-specific content
     switch (fmt) {
@@ -226,6 +245,7 @@ fn generateCMake(ctx: *Context, name: []const u8, version: []const u8, path: []c
         \\# target_link_libraries({s} PRIVATE fmt::fmt)
         \\
     , .{ name, version, name, name, name });
+    defer ctx.allocator.free(content);
 
     try ctx.stdout.dim("    Generated CMakeLists.txt ({d} bytes)\n", .{content.len});
 }
@@ -272,6 +292,7 @@ fn generateNinja(ctx: *Context, name: []const u8, path: []const u8, release: boo
         \\default {s}
         \\
     , .{ opt_flags, name, name });
+    defer ctx.allocator.free(content);
 
     try ctx.stdout.dim("    Generated build.ninja ({d} bytes)\n", .{content.len});
 }
@@ -309,6 +330,7 @@ fn generateMakefile(ctx: *Context, name: []const u8, path: []const u8, release: 
         \\    rm -rf build $(TARGET)
         \\
     , .{ opt_flags, name });
+    defer ctx.allocator.free(content);
 
     try ctx.stdout.dim("    Generated Makefile ({d} bytes)\n", .{content.len});
 }
@@ -331,6 +353,7 @@ fn generatePkgConfig(ctx: *Context, name: []const u8, version: []const u8, path:
         \\Cflags: -I${{includedir}}
         \\
     , .{ name, name, version, name });
+    defer ctx.allocator.free(content);
 
     try ctx.stdout.dim("    Generated {s}.pc ({d} bytes)\n", .{ name, content.len });
 }

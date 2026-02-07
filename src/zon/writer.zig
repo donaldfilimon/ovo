@@ -19,65 +19,54 @@ pub const WriterOptions = struct {
 
 /// Write a Project to a build.zon formatted string.
 pub fn writeProject(allocator: std.mem.Allocator, project: *const schema.Project, options: WriterOptions) ![]u8 {
-    var buffer = std.ArrayList(u8).init(allocator);
-    errdefer buffer.deinit();
+    var buffer: std.ArrayList(u8) = .empty;
+    errdefer buffer.deinit(allocator);
 
-    var writer = ZonWriter.init(&buffer, options);
+    var writer = ZonWriter.init(allocator, &buffer, options);
     try writer.writeProjectImpl(project);
 
-    return buffer.toOwnedSlice();
+    return buffer.toOwnedSlice(allocator);
 }
 
-/// Write a Project to a file.
-pub fn writeProjectToFile(project: *const schema.Project, path: []const u8, options: WriterOptions) !void {
-    var file = try std.fs.cwd().createFile(path, .{});
-    defer file.close();
+/// Write a Project to a file (Zig 0.16 compatible).
+pub fn writeProjectToFile(allocator: std.mem.Allocator, project: *const schema.Project, path: []const u8, options: WriterOptions) !void {
+    const content = try writeProject(allocator, project, options);
+    defer allocator.free(content);
 
-    var buffered = std.io.bufferedWriter(file.writer());
-    var writer = ZonWriter.initFile(&buffered, options);
-    try writer.writeProjectImpl(project);
-    try buffered.flush();
+    var path_buf: [4096]u8 = undefined;
+    if (path.len >= path_buf.len) return error.NameTooLong;
+    @memcpy(path_buf[0..path.len], path);
+    path_buf[path.len] = 0;
+
+    const file = std.c.fopen(@ptrCast(&path_buf), "w") orelse return error.AccessDenied;
+    defer _ = std.c.fclose(file);
+
+    const written = std.c.fwrite(content.ptr, 1, content.len, file);
+    if (written != content.len) return error.WriteError;
 }
 
 /// Internal ZON writer with state management.
 pub const ZonWriter = struct {
-    writer: Writer,
+    allocator: std.mem.Allocator,
+    buffer: *std.ArrayList(u8),
     options: WriterOptions,
     depth: usize,
 
-    const Writer = union(enum) {
-        array_list: *std.ArrayList(u8),
-        file: *std.io.BufferedWriter(4096, std.fs.File.Writer),
-    };
-
-    pub fn init(buffer: *std.ArrayList(u8), options: WriterOptions) ZonWriter {
+    pub fn init(allocator: std.mem.Allocator, buffer: *std.ArrayList(u8), options: WriterOptions) ZonWriter {
         return .{
-            .writer = .{ .array_list = buffer },
-            .options = options,
-            .depth = 0,
-        };
-    }
-
-    pub fn initFile(buffered: *std.io.BufferedWriter(4096, std.fs.File.Writer), options: WriterOptions) ZonWriter {
-        return .{
-            .writer = .{ .file = buffered },
+            .allocator = allocator,
+            .buffer = buffer,
             .options = options,
             .depth = 0,
         };
     }
 
     fn write(self: *ZonWriter, bytes: []const u8) !void {
-        switch (self.writer) {
-            .array_list => |al| try al.appendSlice(bytes),
-            .file => |f| _ = try f.write(bytes),
-        }
+        try self.buffer.appendSlice(self.allocator, bytes);
     }
 
     fn writeByte(self: *ZonWriter, byte: u8) !void {
-        switch (self.writer) {
-            .array_list => |al| try al.append(byte),
-            .file => |f| _ = try f.write(&[_]u8{byte}),
-        }
+        try self.buffer.append(self.allocator, byte);
     }
 
     fn writeIndent(self: *ZonWriter) !void {
@@ -249,12 +238,12 @@ pub const ZonWriter = struct {
 
         // Write version components
         var buf: [64]u8 = undefined;
-        const len = std.fmt.bufPrint(&buf, "{d}.{d}.{d}", .{
+        const ver_str = std.fmt.bufPrint(&buf, "{d}.{d}.{d}", .{
             version.major,
             version.minor,
             version.patch,
         }) catch return;
-        try self.write(buf[0..len]);
+        try self.write(ver_str);
 
         if (version.prerelease) |pre| {
             try self.write("-");
@@ -283,8 +272,8 @@ pub const ZonWriter = struct {
         try self.write(name);
         try self.write(" = ");
         var buf: [16]u8 = undefined;
-        const len = std.fmt.bufPrint(&buf, "{d}", .{value}) catch return;
-        try self.write(buf[0..len]);
+        const num_str = std.fmt.bufPrint(&buf, "{d}", .{value}) catch return;
+        try self.write(num_str);
         try self.write(",\n");
     }
 

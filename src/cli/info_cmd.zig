@@ -5,6 +5,10 @@
 
 const std = @import("std");
 const commands = @import("commands.zig");
+const manifest = @import("manifest.zig");
+const zon = @import("zon");
+
+const zon_parser = zon.parser;
 
 const Context = commands.Context;
 const TermWriter = commands.TermWriter;
@@ -56,68 +60,53 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
 
     // Check for build.zon
     const manifest_exists = blk: {
-        ctx.cwd.access("build.zon", .{}) catch break :blk false;
+        ctx.cwd.access(manifest.manifest_filename, .{}) catch break :blk false;
         break :blk true;
     };
 
     if (!manifest_exists) {
         try ctx.stderr.err("error: ", .{});
-        try ctx.stderr.print("no build.zon found in current directory\n", .{});
+        try ctx.stderr.print("no {s} found in current directory\n", .{manifest.manifest_filename});
         return 1;
     }
 
-    // Simulated project info (would parse build.zon in real implementation)
-    const ProjectInfo = struct {
-        name: []const u8,
-        version: []const u8,
-        description: []const u8,
-        license: []const u8,
-        build_type: []const u8,
-        language: []const u8,
-        standard: []const u8,
-        dep_count: u32,
-        dev_dep_count: u32,
+    // Parse build.zon
+    var project = zon_parser.parseFile(ctx.allocator, manifest.manifest_filename) catch |err| {
+        try ctx.stderr.err("error: ", .{});
+        try ctx.stderr.print("failed to parse {s}: {}\n", .{ manifest.manifest_filename, err });
+        return 1;
     };
+    defer project.deinit(ctx.allocator);
 
-    const info = ProjectInfo{
-        .name = "myproject",
-        .version = "1.0.0",
-        .description = "A sample C++ project",
-        .license = "MIT",
-        .build_type = "executable",
-        .language = "cpp",
-        .standard = "c++17",
-        .dep_count = 3,
-        .dev_dep_count = 1,
-    };
+    const name = project.name;
+    const ver = project.version;
+    const description = project.description orelse "No description";
+    const license = project.license orelse "Not specified";
+    const target_count = project.targets.len;
+    const dep_count: usize = if (project.dependencies) |deps| deps.len else 0;
+
+    // Format version string
+    var version_buf: [64]u8 = undefined;
+    const version_str = std.fmt.bufPrint(&version_buf, "{d}.{d}.{d}", .{ ver.major, ver.minor, ver.patch }) catch "0.0.0";
 
     if (json_output) {
-        // JSON output
         try ctx.stdout.print(
             \\{{
             \\  "name": "{s}",
             \\  "version": "{s}",
             \\  "description": "{s}",
             \\  "license": "{s}",
-            \\  "build": {{
-            \\    "type": "{s}",
-            \\    "language": "{s}",
-            \\    "standard": "{s}"
-            \\  }},
-            \\  "dependencies": {d},
-            \\  "dev_dependencies": {d}
+            \\  "targets": {d},
+            \\  "dependencies": {d}
             \\}}
             \\
         , .{
-            info.name,
-            info.version,
-            info.description,
-            info.license,
-            info.build_type,
-            info.language,
-            info.standard,
-            info.dep_count,
-            info.dev_dep_count,
+            name,
+            version_str,
+            description,
+            license,
+            target_count,
+            dep_count,
         });
         return 0;
     }
@@ -126,24 +115,38 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
     try ctx.stdout.bold("Project Information\n", .{});
     try ctx.stdout.print("\n", .{});
 
-    // Basic info
-    try printField(ctx.stdout, "Name", info.name);
-    try printField(ctx.stdout, "Version", info.version);
-    try printField(ctx.stdout, "Description", info.description);
-    try printField(ctx.stdout, "License", info.license);
+    try printField(ctx.stdout, "Name", name);
+    try printField(ctx.stdout, "Version", version_str);
+    try printField(ctx.stdout, "Description", description);
+    try printField(ctx.stdout, "License", license);
 
     try ctx.stdout.print("\n", .{});
-    try ctx.stdout.bold("Build Configuration\n", .{});
-    try printField(ctx.stdout, "Type", info.build_type);
-    try printField(ctx.stdout, "Language", info.language);
-    try printField(ctx.stdout, "Standard", info.standard);
+    try ctx.stdout.bold("Targets\n", .{});
+    for (project.targets) |target| {
+        try ctx.stdout.print("  ", .{});
+        try ctx.stdout.info("{s}", .{target.name});
+        try ctx.stdout.dim(" ({s})\n", .{target.target_type.toString()});
+    }
 
     try ctx.stdout.print("\n", .{});
     try ctx.stdout.bold("Dependencies\n", .{});
-    try ctx.stdout.print("  Dependencies:     ", .{});
-    try ctx.stdout.info("{d}\n", .{info.dep_count});
-    try ctx.stdout.print("  Dev dependencies: ", .{});
-    try ctx.stdout.info("{d}\n", .{info.dev_dep_count});
+    try ctx.stdout.print("  Count:            ", .{});
+    try ctx.stdout.info("{d}\n", .{dep_count});
+    if (project.dependencies) |deps| {
+        for (deps) |dep| {
+            try ctx.stdout.print("  ", .{});
+            try ctx.stdout.info("{s}", .{dep.name});
+            const source_label: []const u8 = switch (dep.source) {
+                .git => "git",
+                .url => "url",
+                .path => "path",
+                .vcpkg => "vcpkg",
+                .conan => "conan",
+                .system => "system",
+            };
+            try ctx.stdout.dim(" ({s})\n", .{source_label});
+        }
+    }
 
     // Show paths if requested
     if (show_paths) {

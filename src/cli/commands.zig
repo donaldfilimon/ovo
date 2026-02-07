@@ -346,6 +346,22 @@ pub fn hasVerboseFlag(args: []const []const u8) bool {
     return false;
 }
 
+/// Check if a file exists using C library access()
+pub fn fileExistsC(path: []const u8) bool {
+    var path_buf: [4096]u8 = undefined;
+    if (path.len >= path_buf.len) return false;
+    @memcpy(path_buf[0..path.len], path);
+    path_buf[path.len] = 0;
+    return std.c.access(@ptrCast(&path_buf), std.c.F_OK) == 0;
+}
+
+/// Check if the project manifest file exists in the current directory
+pub fn manifestExists(cwd: DirHandle) bool {
+    const manifest_mod = @import("manifest.zig");
+    cwd.access(manifest_mod.manifest_filename, .{}) catch return false;
+    return true;
+}
+
 /// Command execution error
 pub const CommandError = error{
     UnknownCommand,

@@ -4,6 +4,7 @@
 //! Usage: ovo doc
 
 const std = @import("std");
+const builtin = @import("builtin");
 const commands = @import("commands.zig");
 const manifest = @import("manifest.zig");
 
@@ -31,6 +32,29 @@ fn printHelp(writer: *TermWriter) !void {
     try writer.dim("    ovo doc -o html/         # Output to html/\n", .{});
 }
 
+/// Search PATH for an executable by name.
+fn findInPath(name: []const u8) bool {
+    var key_buf: [8]u8 = undefined;
+    const key = "PATH";
+    @memcpy(key_buf[0..key.len], key);
+    key_buf[key.len] = 0;
+
+    const path_env_ptr = std.c.getenv(@ptrCast(&key_buf)) orelse return false;
+    const path_env = std.mem.span(path_env_ptr);
+
+    var iter = std.mem.splitScalar(u8, path_env, if (builtin.os.tag == .windows) ';' else ':');
+    while (iter.next()) |dir| {
+        var check_buf: [4096]u8 = undefined;
+        if (dir.len + 1 + name.len >= check_buf.len) continue;
+        @memcpy(check_buf[0..dir.len], dir);
+        check_buf[dir.len] = '/';
+        @memcpy(check_buf[dir.len + 1 ..][0..name.len], name);
+        check_buf[dir.len + 1 + name.len] = 0;
+        if (std.c.access(@ptrCast(&check_buf), std.c.F_OK) == 0) return true;
+    }
+    return false;
+}
+
 /// Execute the doc command
 pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
     if (commands.hasHelpFlag(args)) {
@@ -49,8 +73,23 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
         return 1;
     }
 
-    try ctx.stdout.bold("Documentation", .{});
-    try ctx.stdout.print(" generation: coming soon\n", .{});
-    try ctx.stdout.dim("  Run doxygen or clang-doc manually for now.\n", .{});
-    return 0;
+    if (findInPath("doxygen")) {
+        try ctx.stdout.success("Found doxygen", .{});
+        try ctx.stdout.print(" in PATH.\n", .{});
+        try ctx.stdout.dim("  Run 'doxygen -g' to generate a Doxyfile, then 'doxygen' to build docs.\n", .{});
+        return 0;
+    }
+
+    if (findInPath("clang-doc")) {
+        try ctx.stdout.success("Found clang-doc", .{});
+        try ctx.stdout.print(" in PATH.\n", .{});
+        try ctx.stdout.dim("  Run 'clang-doc --format=html src/' to generate documentation.\n", .{});
+        return 0;
+    }
+
+    try ctx.stderr.warn("No documentation generator found.\n", .{});
+    try ctx.stderr.print("  Install one of the following to use 'ovo doc':\n", .{});
+    try ctx.stderr.print("    - doxygen   (https://www.doxygen.nl)\n", .{});
+    try ctx.stderr.print("    - clang-doc (part of LLVM/Clang tools)\n", .{});
+    return 1;
 }

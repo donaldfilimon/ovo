@@ -71,13 +71,13 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
 
     // Check if build.zon already exists
     const manifest_exists = blk: {
-        ctx.cwd.access("build.zon", .{}) catch break :blk false;
+        ctx.cwd.access(manifest.manifest_filename, .{}) catch break :blk false;
         break :blk true;
     };
 
     if (manifest_exists and !force) {
         try ctx.stderr.err("error: ", .{});
-        try ctx.stderr.print("build.zon already exists in this directory\n", .{});
+        try ctx.stderr.print("{s} already exists in this directory\n", .{manifest.manifest_filename});
         try ctx.stderr.dim("Use --force to overwrite.\n", .{});
         return 1;
     }
@@ -221,13 +221,7 @@ fn scanSources(_: *Context) !ScanResult {
     return result;
 }
 
-fn fileExistsC(path: []const u8) bool {
-    var path_buf: [4096]u8 = undefined;
-    if (path.len >= path_buf.len) return false;
-    @memcpy(path_buf[0..path.len], path);
-    path_buf[path.len] = 0;
-    return std.c.access(@ptrCast(&path_buf), std.c.F_OK) == 0;
-}
+const fileExistsC = commands.fileExistsC;
 
 fn isCSource(ext: []const u8) bool {
     return std.mem.eql(u8, ext, ".c");

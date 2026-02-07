@@ -5,6 +5,8 @@
 
 const std = @import("std");
 const commands = @import("commands.zig");
+const manifest = @import("manifest.zig");
+const zon_parser = @import("zon").parser;
 
 const Context = commands.Context;
 const TermWriter = commands.TermWriter;
@@ -76,22 +78,24 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
         }
     }
 
-    // Check for build.zon
-    const manifest_exists = blk: {
-        ctx.cwd.access("build.zon", .{}) catch break :blk false;
-        break :blk true;
-    };
-
-    if (!manifest_exists) {
+    // Parse build.zon
+    var project = zon_parser.parseFile(ctx.allocator, manifest.manifest_filename) catch |err| {
         try ctx.stderr.err("error: ", .{});
-        try ctx.stderr.print("no build.zon found in current directory\n", .{});
+        switch (err) {
+            error.FileNotFound => try ctx.stderr.print("no " ++ manifest.manifest_filename ++ " found in current directory\n", .{}),
+            else => try ctx.stderr.print("failed to parse " ++ manifest.manifest_filename ++ "\n", .{}),
+        }
         return 1;
-    }
+    };
+    defer project.deinit(ctx.allocator);
 
     // Resolve directories
     const actual_bindir = bindir orelse try std.fmt.allocPrint(ctx.allocator, "{s}/bin", .{prefix});
+    defer if (bindir == null) ctx.allocator.free(actual_bindir);
     const actual_libdir = libdir orelse try std.fmt.allocPrint(ctx.allocator, "{s}/lib", .{prefix});
+    defer if (libdir == null) ctx.allocator.free(actual_libdir);
     const actual_includedir = includedir orelse try std.fmt.allocPrint(ctx.allocator, "{s}/include", .{prefix});
+    defer if (includedir == null) ctx.allocator.free(actual_includedir);
 
     // Print install plan
     if (dry_run) {
@@ -107,56 +111,107 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
     try ctx.stdout.dim("  Build type: {s}\n", .{if (release) "release" else "debug"});
     try ctx.stdout.print("\n", .{});
 
-    // Simulated install items
-    const InstallItem = struct {
-        source: []const u8,
-        dest: []const u8,
-        kind: enum { binary, library, header },
-    };
+    // Build install items from project targets
+    const build_dir = if (release) "release" else "debug";
+    var install_count: usize = 0;
 
-    const items = [_]InstallItem{
-        .{ .source = "build/release/myapp", .dest = "bin/myapp", .kind = .binary },
-        .{ .source = "build/release/libmylib.a", .dest = "lib/libmylib.a", .kind = .library },
-        .{ .source = "include/mylib.h", .dest = "include/mylib/mylib.h", .kind = .header },
-    };
+    if (project.targets.len == 0) {
+        try ctx.stdout.warn("No installable targets found in " ++ manifest.manifest_filename ++ "\n", .{});
+        return 0;
+    }
 
-    // Install each item
-    for (items) |item| {
-        const dest_path = switch (item.kind) {
-            .binary => try std.fmt.allocPrint(ctx.allocator, "{s}/{s}", .{ actual_bindir, std.fs.path.basename(item.dest) }),
-            .library => try std.fmt.allocPrint(ctx.allocator, "{s}/{s}", .{ actual_libdir, std.fs.path.basename(item.dest) }),
-            .header => try std.fmt.allocPrint(ctx.allocator, "{s}/{s}", .{ actual_includedir, item.dest["include/".len..] }),
-        };
+    for (project.targets) |target| {
+        const output_name = target.output_name orelse target.name;
 
-        try ctx.stdout.print("  ", .{});
-        if (dry_run) {
-            try ctx.stdout.warn("~", .{});
-        } else {
-            try ctx.stdout.success("*", .{});
+        switch (target.target_type) {
+            .executable => {
+                const dest_path = try std.fmt.allocPrint(ctx.allocator, "{s}/{s}", .{ actual_bindir, output_name });
+                defer ctx.allocator.free(dest_path);
+
+                try ctx.stdout.print("  ", .{});
+                if (dry_run) {
+                    try ctx.stdout.warn("~", .{});
+                } else {
+                    try ctx.stdout.success("*", .{});
+                }
+                try ctx.stdout.dim(" [BIN] ", .{});
+                try ctx.stdout.print("{s}", .{dest_path});
+                try ctx.stdout.dim("  (from build/{s}/{s})\n", .{ build_dir, output_name });
+                install_count += 1;
+            },
+            .static_library => {
+                const lib_filename = try std.fmt.allocPrint(ctx.allocator, "lib{s}.a", .{output_name});
+                defer ctx.allocator.free(lib_filename);
+                const dest_path = try std.fmt.allocPrint(ctx.allocator, "{s}/{s}", .{ actual_libdir, lib_filename });
+                defer ctx.allocator.free(dest_path);
+
+                try ctx.stdout.print("  ", .{});
+                if (dry_run) {
+                    try ctx.stdout.warn("~", .{});
+                } else {
+                    try ctx.stdout.success("*", .{});
+                }
+                try ctx.stdout.dim(" [LIB] ", .{});
+                try ctx.stdout.print("{s}", .{dest_path});
+                try ctx.stdout.dim("  (from build/{s}/{s})\n", .{ build_dir, lib_filename });
+                install_count += 1;
+            },
+            .shared_library => {
+                const lib_filename = try std.fmt.allocPrint(ctx.allocator, "lib{s}.so", .{output_name});
+                defer ctx.allocator.free(lib_filename);
+                const dest_path = try std.fmt.allocPrint(ctx.allocator, "{s}/{s}", .{ actual_libdir, lib_filename });
+                defer ctx.allocator.free(dest_path);
+
+                try ctx.stdout.print("  ", .{});
+                if (dry_run) {
+                    try ctx.stdout.warn("~", .{});
+                } else {
+                    try ctx.stdout.success("*", .{});
+                }
+                try ctx.stdout.dim(" [LIB] ", .{});
+                try ctx.stdout.print("{s}", .{dest_path});
+                try ctx.stdout.dim("  (from build/{s}/{s})\n", .{ build_dir, lib_filename });
+                install_count += 1;
+            },
+            .header_only => {
+                if (target.includes) |includes| {
+                    for (includes) |inc| {
+                        const dest_path = try std.fmt.allocPrint(ctx.allocator, "{s}/{s}", .{ actual_includedir, inc.path });
+                        defer ctx.allocator.free(dest_path);
+
+                        try ctx.stdout.print("  ", .{});
+                        if (dry_run) {
+                            try ctx.stdout.warn("~", .{});
+                        } else {
+                            try ctx.stdout.success("*", .{});
+                        }
+                        try ctx.stdout.dim(" [HDR] ", .{});
+                        try ctx.stdout.print("{s}\n", .{dest_path});
+                        install_count += 1;
+                    }
+                }
+            },
+            .object => {},
         }
-
-        const kind_str = switch (item.kind) {
-            .binary => "BIN",
-            .library => "LIB",
-            .header => "HDR",
-        };
-
-        try ctx.stdout.dim(" [{s}] ", .{kind_str});
-        try ctx.stdout.print("{s}\n", .{dest_path});
 
         if (!dry_run) {
             // Would actually copy file here
-            // std.fs.copyFile(item.source, dest_path, .{});
+            // std.fs.copyFile(source_path, dest_path, .{});
         }
+    }
+
+    if (install_count == 0) {
+        try ctx.stdout.warn("No installable targets found in " ++ manifest.manifest_filename ++ "\n", .{});
+        return 0;
     }
 
     // Summary
     try ctx.stdout.print("\n", .{});
     if (dry_run) {
-        try ctx.stdout.warn("Would install {d} files\n", .{items.len});
+        try ctx.stdout.warn("Would install {d} files\n", .{install_count});
         try ctx.stdout.dim("Run without --dry-run to install.\n", .{});
     } else {
-        try ctx.stdout.success("Installed {d} files\n", .{items.len});
+        try ctx.stdout.success("Installed {d} files\n", .{install_count});
     }
 
     return 0;
