@@ -105,7 +105,7 @@ All 20 CLI commands now parse real build.zon data. `manifest.manifest_filename` 
 ## Latent Zig 0.16 Migration Issues
 
 These don't block `zig build` today (Zig evaluates lazily), but will fail when the code paths are exercised:
-- **60 uses of `std.fs.cwd()`** in translate/ (~31), compiler/ (~22), util/ (~6), package/ (~1) — should use `compat.zig` or `DirHandle`
+- **~102 uses of `std.fs.cwd()`** remaining in translate/, compiler/, util/, package/ — 17 easy wins migrated to `compat.*`, rest need `openFile`/`createFile`/`openDir` wrappers that return `std.fs.File`/`Dir` objects
 - ~~20 uses of `std.posix.getenv()`~~ — **MIGRATED** to `compat.getenv()` across 9 files
 - `src/util/compat.zig` exists with wrappers; only `util/root.zig` re-exports it — CLI uses its own `DirHandle`/`CFile` in `commands.zig`
 
