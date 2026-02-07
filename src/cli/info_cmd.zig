@@ -9,6 +9,7 @@ const manifest = @import("manifest.zig");
 const zon = @import("zon");
 
 const zon_parser = zon.parser;
+const zon_schema = zon.schema;
 
 const Context = commands.Context;
 const TermWriter = commands.TermWriter;
@@ -136,15 +137,7 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
         for (deps) |dep| {
             try ctx.stdout.print("  ", .{});
             try ctx.stdout.info("{s}", .{dep.name});
-            const source_label: []const u8 = switch (dep.source) {
-                .git => "git",
-                .url => "url",
-                .path => "path",
-                .vcpkg => "vcpkg",
-                .conan => "conan",
-                .system => "system",
-            };
-            try ctx.stdout.dim(" ({s})\n", .{source_label});
+            try ctx.stdout.dim(" ({s})\n", .{zon_schema.DependencySource.typeName(dep.source)});
         }
     }
 

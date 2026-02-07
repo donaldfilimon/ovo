@@ -58,7 +58,7 @@ Modules are declared in `build.zig` with explicit import lists. Each module has 
 
 ### CLI Command Pattern
 
-- `src/cli/commands.zig` — dispatcher (`dispatch()` → `dispatchCommand()`), `Context`, `DirHandle`, `CFile`, `TermWriter`
+- `src/cli/commands.zig` — dispatcher (`dispatch()` → `dispatchCommand()`), `Context`, `DirHandle`, `CFile`, `TermWriter`, shared helpers (`fileExistsC`, `findInPathC`, `hasHelpFlag`, `hasVerboseFlag`)
 - `src/cli/*_cmd.zig` — each command exports `pub fn execute(ctx: *Context, args: []const []const u8) !u8`
 - `src/cli/manifest.zig` — template handling: `getTemplateDir()`, `substituteInContent()`, `renderTemplate()`
 
@@ -98,16 +98,16 @@ build.zon → zon.parser.parseFile() → schema.Project
 
 ## Command Implementation Status
 
-Fully wired to build.zon: `build`, `run`, `new`, `init`, `clean`, `doctor`, `info`, `add`, `remove`, `deps`, `fetch`, `lock`, `update`, `doc`, `install`, `test`, `export`, `import`
+Fully wired to build.zon: `build`, `run`, `new`, `init`, `clean`, `doctor`, `info`, `add`, `remove`, `deps`, `fetch`, `lock`, `update`, `doc`, `install`, `test`, `export`, `import`, `fmt`, `lint`
 
 All 20 CLI commands now parse real build.zon data. `manifest.manifest_filename` constant used everywhere (no hardcoded strings). Import command supports real CMake scanning; other import formats show honest "not yet implemented" messages.
 
 ## Latent Zig 0.16 Migration Issues
 
 These don't block `zig build` today (Zig evaluates lazily), but will fail when the code paths are exercised:
-- **60 uses of `std.fs.cwd()`** in translate/ (~30), compiler/ (~18), util/ (~6), package/ (~6) — should use `compat.zig` or `DirHandle`
-- **20 uses of `std.posix.getenv()`** in compiler/ (7), package/ (6), util/ (4) — should use `compat.getenv()`
-- `src/util/compat.zig` exists with wrappers but **zero modules import it** — CLI uses its own `DirHandle`/`CFile` in `commands.zig`
+- **60 uses of `std.fs.cwd()`** in translate/ (~31), compiler/ (~22), util/ (~6), package/ (~1) — should use `compat.zig` or `DirHandle`
+- **20 uses of `std.posix.getenv()`** in compiler/ (7), package/ (9), util/ (4) — should use `compat.getenv()`
+- `src/util/compat.zig` exists with wrappers; only `util/root.zig` re-exports it — CLI uses its own `DirHandle`/`CFile` in `commands.zig`
 
 ## CI
 

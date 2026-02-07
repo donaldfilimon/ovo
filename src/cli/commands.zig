@@ -355,6 +355,27 @@ pub fn fileExistsC(path: []const u8) bool {
     return std.c.access(@ptrCast(&path_buf), std.c.F_OK) == 0;
 }
 
+/// Search PATH for an executable by name.
+pub fn findInPathC(name: []const u8) bool {
+    var key_buf: [8]u8 = undefined;
+    @memcpy(key_buf[0..4], "PATH");
+    key_buf[4] = 0;
+    const path_env = std.c.getenv(@ptrCast(&key_buf)) orelse return false;
+    const path_str = std.mem.span(path_env);
+    const sep: u8 = if (@import("builtin").os.tag == .windows) ';' else ':';
+    var iter = std.mem.splitScalar(u8, path_str, sep);
+    while (iter.next()) |dir| {
+        var check_buf: [4096]u8 = undefined;
+        if (dir.len + 1 + name.len >= check_buf.len) continue;
+        @memcpy(check_buf[0..dir.len], dir);
+        check_buf[dir.len] = '/';
+        @memcpy(check_buf[dir.len + 1 ..][0..name.len], name);
+        check_buf[dir.len + 1 + name.len] = 0;
+        if (std.c.access(@ptrCast(&check_buf), std.c.F_OK) == 0) return true;
+    }
+    return false;
+}
+
 /// Check if the project manifest file exists in the current directory
 pub fn manifestExists(cwd: DirHandle) bool {
     const manifest_mod = @import("manifest.zig");

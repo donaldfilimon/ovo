@@ -6,7 +6,9 @@
 const std = @import("std");
 const commands = @import("commands.zig");
 const manifest = @import("manifest.zig");
-const zon_parser = @import("zon").parser;
+const zon = @import("zon");
+const zon_parser = zon.parser;
+const zon_schema = zon.schema;
 
 const Context = commands.Context;
 const TermWriter = commands.TermWriter;
@@ -109,14 +111,7 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
 
     if (project.dependencies) |deps| {
         for (deps) |dep| {
-            const source_str: []const u8 = switch (dep.source) {
-                .git => "git",
-                .url => "url",
-                .path => "path",
-                .vcpkg => "vcpkg",
-                .conan => "conan",
-                .system => "system",
-            };
+            const source_str = zon_schema.DependencySource.typeName(dep.source);
             try nodes_list.append(ctx.allocator, .{
                 .name = dep.name,
                 .version = "latest",
