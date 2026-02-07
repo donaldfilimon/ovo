@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: "master"
+
+      - name: Build
+        run: zig build
+
+      - name: Unit tests
+        run: zig build test
+
+      - name: Integration test
+        run: |
+          export OVO_TEMPLATES="$PWD/templates"
+          ./scripts/integration_test.sh

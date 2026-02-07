@@ -142,17 +142,32 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
 
     // Create directories
     try createDir(ctx, name);
-    try createDir(ctx, try joinPath(ctx.allocator, name, "src"));
-    try createDir(ctx, try joinPath(ctx.allocator, name, "include"));
-    try createDir(ctx, try joinPath(ctx.allocator, name, "tests"));
+    {
+        const src_path = try joinPath(ctx.allocator, name, "src");
+        defer ctx.allocator.free(src_path);
+        try createDir(ctx, src_path);
+    }
+    {
+        const include_path = try joinPath(ctx.allocator, name, "include");
+        defer ctx.allocator.free(include_path);
+        try createDir(ctx, include_path);
+    }
+    {
+        const tests_path = try joinPath(ctx.allocator, name, "tests");
+        defer ctx.allocator.free(tests_path);
+        try createDir(ctx, tests_path);
+    }
 
     // Create build.zon
     try ctx.stdout.print("  ", .{});
     try ctx.stdout.success("*", .{});
     try ctx.stdout.print(" Writing build.zon...\n", .{});
 
-    const manifest_path = try joinPath(ctx.allocator, name, manifest.manifest_filename);
-    try writeBuildZon(ctx, manifest_path, name, template, lang, std_version);
+    {
+        const manifest_path = try joinPath(ctx.allocator, name, manifest.manifest_filename);
+        defer ctx.allocator.free(manifest_path);
+        try writeBuildZon(ctx, manifest_path, name, template, lang, std_version);
+    }
 
     // Create source files
     try ctx.stdout.print("  ", .{});
@@ -165,28 +180,38 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
     switch (template) {
         .executable => {
             const main_path = try std.fmt.allocPrint(ctx.allocator, "{s}/src/main{s}", .{ name, ext });
+            defer ctx.allocator.free(main_path);
             try writeMainFile(ctx, main_path, name, lang);
         },
         .library => {
             const src_name = if (std.mem.eql(u8, lang, "cpp")) "lib" else name;
             const src_path = try std.fmt.allocPrint(ctx.allocator, "{s}/src/{s}{s}", .{ name, src_name, ext });
+            defer ctx.allocator.free(src_path);
             const hdr_name = if (std.mem.eql(u8, lang, "cpp")) "lib" else name;
             const hdr_path = try std.fmt.allocPrint(ctx.allocator, "{s}/include/{s}{s}", .{ name, hdr_name, header_ext });
+            defer ctx.allocator.free(hdr_path);
             try writeLibraryFiles(ctx, src_path, hdr_path, name, lang);
         },
         .header_only => {
             const hdr_path = try std.fmt.allocPrint(ctx.allocator, "{s}/include/{s}{s}", .{ name, name, header_ext });
+            defer ctx.allocator.free(hdr_path);
             try writeHeaderOnlyFile(ctx, hdr_path, name, lang);
         },
     }
 
     // Create test file
-    const test_path = try std.fmt.allocPrint(ctx.allocator, "{s}/tests/test_main{s}", .{ name, ext });
-    try writeTestFile(ctx, test_path, name, lang);
+    {
+        const test_path = try std.fmt.allocPrint(ctx.allocator, "{s}/tests/test_main{s}", .{ name, ext });
+        defer ctx.allocator.free(test_path);
+        try writeTestFile(ctx, test_path, name, lang);
+    }
 
     // Create .gitignore
-    const gitignore_path = try joinPath(ctx.allocator, name, ".gitignore");
-    try writeGitignore(ctx, gitignore_path);
+    {
+        const gitignore_path = try joinPath(ctx.allocator, name, ".gitignore");
+        defer ctx.allocator.free(gitignore_path);
+        try writeGitignore(ctx, gitignore_path);
+    }
 
     // Initialize git if requested
     if (init_git) {
@@ -551,6 +576,7 @@ fn writeTestFile(ctx: *Context, path: []const u8, name: []const u8, lang: []cons
             \\
         , .{name});
 
+    defer ctx.allocator.free(content);
     const file = try ctx.cwd.createFile(path, .{});
     defer file.close();
     try file.writeAll(content);
