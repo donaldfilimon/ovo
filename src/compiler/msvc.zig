@@ -498,14 +498,14 @@ pub const MSVC = struct {
         allocator.free(result.stdout);
 
         // Read and parse dependency file
-        const dep_content = std.fs.cwd().readFileAlloc(allocator, dep_file, 1024 * 1024) catch {
+        const dep_content = compat.readFileAlloc(allocator, dep_file, 1024 * 1024) catch {
             allocator.free(result.stderr);
             return self.scanFromSource(allocator, source_path);
         };
         defer allocator.free(dep_content);
 
         // Delete temp file
-        std.fs.cwd().deleteFile(dep_file) catch {};
+        compat.unlink(dep_file) catch {};
 
         const parsed = try parseMSVCDeps(allocator, dep_content);
 
@@ -522,7 +522,7 @@ pub const MSVC = struct {
     fn scanFromSource(self: *Self, allocator: Allocator, source_path: []const u8) !ModuleDepsResult {
         _ = self;
 
-        const source = std.fs.cwd().readFileAlloc(allocator, source_path, 1024 * 1024 * 10) catch |err| {
+        const source = compat.readFileAlloc(allocator, source_path, 1024 * 1024 * 10) catch |err| {
             return .{
                 .success = false,
                 .dependencies = &.{},
@@ -730,7 +730,7 @@ fn findMSVC(allocator: Allocator) !struct {
             const cl_path = try std.fs.path.join(allocator, &.{ dir, "cl.exe" });
             defer allocator.free(cl_path);
 
-            if (std.fs.cwd().access(cl_path, .{})) |_| {
+            if (compat.exists(cl_path)) {
                 const link_path = try std.fs.path.join(allocator, &.{ dir, "link.exe" });
                 const lib_path = try std.fs.path.join(allocator, &.{ dir, "lib.exe" });
 
@@ -756,7 +756,7 @@ fn findVSWhere(allocator: Allocator) !?[]const u8 {
     };
 
     for (vswhere_paths) |vswhere| {
-        if (std.fs.cwd().access(vswhere, .{})) |_| {
+        if (compat.exists(vswhere)) {
             const result = try runProcess(allocator, &.{
                 vswhere,
                 "-latest",

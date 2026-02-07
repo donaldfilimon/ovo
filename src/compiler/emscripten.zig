@@ -503,7 +503,7 @@ pub const Emscripten = struct {
     pub fn scanModuleDeps(self: *Self, allocator: Allocator, source_path: []const u8, _: CompileOptions) !ModuleDepsResult {
         _ = self;
 
-        const source = std.fs.cwd().readFileAlloc(allocator, source_path, 1024 * 1024 * 10) catch |err| {
+        const source = compat.readFileAlloc(allocator, source_path, 1024 * 1024 * 10) catch |err| {
             return .{
                 .success = false,
                 .dependencies = &.{},
@@ -603,7 +603,7 @@ fn findEmscripten(allocator: Allocator) !struct {
             const emcc_path = try std.fs.path.join(allocator, &.{ emsdk, candidate });
             defer allocator.free(emcc_path);
 
-            if (std.fs.cwd().access(emcc_path, .{})) |_| {
+            if (compat.exists(emcc_path)) {
                 const dir = std.fs.path.dirname(emcc_path) orelse ".";
                 const emxx_path = try std.fs.path.join(allocator, &.{ dir, "em++" });
 
@@ -627,7 +627,7 @@ fn findEmscripten(allocator: Allocator) !struct {
                 const full_path = try std.fs.path.join(allocator, &.{ dir, name });
                 defer allocator.free(full_path);
 
-                if (std.fs.cwd().access(full_path, .{})) |_| {
+                if (compat.exists(full_path)) {
                     const emxx_path = try std.fs.path.join(allocator, &.{ dir, "em++" });
 
                     return .{

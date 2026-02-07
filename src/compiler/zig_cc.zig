@@ -391,7 +391,7 @@ pub const ZigCC = struct {
     /// Scan module dependencies
     pub fn scanModuleDeps(self: *Self, allocator: Allocator, source_path: []const u8, options: CompileOptions) !ModuleDepsResult {
         // Read source file and scan for module declarations
-        const source = std.fs.cwd().readFileAlloc(allocator, source_path, 1024 * 1024 * 10) catch |err| {
+        const source = compat.readFileAlloc(allocator, source_path, 1024 * 1024 * 10) catch |err| {
             return .{
                 .success = false,
                 .dependencies = &.{},
@@ -558,7 +558,7 @@ fn findZigPath(allocator: Allocator) ![]const u8 {
             const zig_path = try std.fs.path.join(allocator, &.{ dir, "zig" });
             defer allocator.free(zig_path);
 
-            if (std.fs.cwd().access(zig_path, .{})) |_| {
+            if (compat.exists(zig_path)) {
                 return allocator.dupe(u8, zig_path);
             } else |_| {}
         }
