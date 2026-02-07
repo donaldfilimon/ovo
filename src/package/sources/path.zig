@@ -157,7 +157,8 @@ pub const PathSource = struct {
     /// Find package manifest in directory.
     fn findManifest(self: *PathSource, dir_path: []const u8) ?[]const u8 {
         const manifest_names = [_][]const u8{
-            "ovo.zon", // Ovo package manifest
+            "build.zon", // OVO package manifest (primary)
+            "ovo.zon", // Legacy Ovo package manifest
             "build.zig.zon", // Zig build manifest
             "build.zig", // Zig build file
         };

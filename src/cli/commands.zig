@@ -22,6 +22,10 @@ pub const info_cmd = @import("info_cmd.zig");
 pub const deps_cmd = @import("deps_cmd.zig");
 pub const fmt_cmd = @import("fmt_cmd.zig");
 pub const lint_cmd = @import("lint_cmd.zig");
+pub const doc_cmd = @import("doc_cmd.zig");
+pub const doctor_cmd = @import("doctor_cmd.zig");
+pub const update_cmd = @import("update_cmd.zig");
+pub const lock_cmd = @import("lock_cmd.zig");
 
 /// ANSI color codes for terminal output
 pub const Color = struct {
@@ -128,6 +132,10 @@ pub const command_list = [_]CommandDescriptor{
     .{ .name = "deps", .description = "Show dependency tree", .usage = "ovo deps [--why <pkg>]" },
     .{ .name = "fmt", .description = "Format source code", .usage = "ovo fmt [files...]" },
     .{ .name = "lint", .description = "Run linter", .usage = "ovo lint [files...]" },
+    .{ .name = "doc", .description = "Generate documentation", .usage = "ovo doc" },
+    .{ .name = "doctor", .description = "Diagnose environment", .usage = "ovo doctor" },
+    .{ .name = "update", .description = "Update dependencies", .usage = "ovo update [pkg]" },
+    .{ .name = "lock", .description = "Generate lock file", .usage = "ovo lock" },
 };
 
 /// Simple directory handle wrapper (uses cwd via C library)
@@ -215,18 +223,31 @@ pub const DirHandle = struct {
 pub const CFile = struct {
     handle: ?*std.c.FILE,
 
-    pub fn close(self: *CFile) void {
+    pub fn close(self: *const CFile) void {
         if (self.handle) |h| {
             _ = std.c.fclose(h);
-            self.handle = null;
         }
     }
 
-    pub fn writeAll(self: *CFile, bytes: []const u8) !void {
+    pub fn writeAll(self: *const CFile, bytes: []const u8) !void {
         if (self.handle) |h| {
             const written = std.c.fwrite(bytes.ptr, 1, bytes.len, h);
             if (written != bytes.len) return error.WriteError;
         }
+    }
+
+    pub fn readAll(self: *const CFile, allocator: std.mem.Allocator) ![]u8 {
+        if (self.handle) |h| {
+            var list = std.ArrayList(u8).empty;
+            var buf: [4096]u8 = undefined;
+            while (true) {
+                const n = std.c.fread(&buf, 1, buf.len, h);
+                if (n == 0) break;
+                try list.appendSlice(allocator, buf[0..n]);
+            }
+            return try list.toOwnedSlice(allocator);
+        }
+        return error.FileNotFound;
     }
 };
 
@@ -410,6 +431,14 @@ fn dispatchCommand(command: []const u8, args: []const []const u8, ctx: *Context)
         return fmt_cmd.execute(ctx, args);
     } else if (std.mem.eql(u8, command, "lint")) {
         return lint_cmd.execute(ctx, args);
+    } else if (std.mem.eql(u8, command, "doc")) {
+        return doc_cmd.execute(ctx, args);
+    } else if (std.mem.eql(u8, command, "doctor")) {
+        return doctor_cmd.execute(ctx, args);
+    } else if (std.mem.eql(u8, command, "update")) {
+        return update_cmd.execute(ctx, args);
+    } else if (std.mem.eql(u8, command, "lock")) {
+        return lock_cmd.execute(ctx, args);
     }
 
     return error.UnknownCommand;
@@ -421,4 +450,8 @@ test "commands module" {
     _ = run_cmd;
     _ = test_cmd;
     _ = new_cmd;
+    _ = doc_cmd;
+    _ = doctor_cmd;
+    _ = update_cmd;
+    _ = lock_cmd;
 }

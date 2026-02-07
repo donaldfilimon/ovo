@@ -165,11 +165,13 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
     switch (template) {
         .executable => {
             const main_path = try std.fmt.allocPrint(ctx.allocator, "{s}/src/main{s}", .{ name, ext });
-            try writeMainFile(ctx, main_path, lang);
+            try writeMainFile(ctx, main_path, name, lang);
         },
         .library => {
-            const src_path = try std.fmt.allocPrint(ctx.allocator, "{s}/src/{s}{s}", .{ name, name, ext });
-            const hdr_path = try std.fmt.allocPrint(ctx.allocator, "{s}/include/{s}{s}", .{ name, name, header_ext });
+            const src_name = if (std.mem.eql(u8, lang, "cpp")) "lib" else name;
+            const src_path = try std.fmt.allocPrint(ctx.allocator, "{s}/src/{s}{s}", .{ name, src_name, ext });
+            const hdr_name = if (std.mem.eql(u8, lang, "cpp")) "lib" else name;
+            const hdr_path = try std.fmt.allocPrint(ctx.allocator, "{s}/include/{s}{s}", .{ name, hdr_name, header_ext });
             try writeLibraryFiles(ctx, src_path, hdr_path, name, lang);
         },
         .header_only => {
@@ -223,8 +225,23 @@ fn joinPath(allocator: std.mem.Allocator, a: []const u8, b: []const u8) ![]const
 }
 
 fn writeBuildZon(ctx: *Context, path: []const u8, name: []const u8, template: Template, lang: []const u8, std_version: ?[]const u8) !void {
-    const kind = templateKind(template, lang);
-    var content = try manifest.renderTemplate(ctx.allocator, kind, name);
+    const template_dir = try manifest.getTemplateDir(ctx.allocator);
+    defer ctx.allocator.free(template_dir);
+    const template_rel = getTemplateBuildZonPath(template, lang);
+    const template_path = try std.fmt.allocPrint(ctx.allocator, "{s}/{s}", .{ template_dir, template_rel });
+    defer ctx.allocator.free(template_path);
+
+    const template_content = readTemplateFile(ctx, template_path) catch |err| blk: {
+        if (err == error.FileNotFound) {
+            break :blk try getManifestBuildZon(ctx.allocator, template, lang, name);
+        }
+        return err;
+    };
+    defer {
+        if (template_content.owned) ctx.allocator.free(template_content.content);
+    }
+
+    var content = try manifest.substituteInContent(ctx.allocator, template_content.content, name);
     if (std_version) |ver| {
         const updated = try manifest.applyStandardOverride(ctx.allocator, content, lang, ver);
         ctx.allocator.free(content);
@@ -237,6 +254,31 @@ fn writeBuildZon(ctx: *Context, path: []const u8, name: []const u8, template: Te
     try file.writeAll(content);
 }
 
+fn getTemplateBuildZonPath(template: Template, lang: []const u8) []const u8 {
+    const kind = templateKind(template, lang);
+    return manifest.getBuildZonTemplatePath(kind, lang);
+}
+
+const TemplateContent = struct { content: []const u8, owned: bool };
+
+fn readTemplateFile(ctx: *Context, template_path: []const u8) !TemplateContent {
+    var file = ctx.cwd.openFile(template_path, .{}) catch return error.FileNotFound;
+    defer file.close();
+    const content = try file.readAll(ctx.allocator);
+    return .{ .content = content, .owned = true };
+}
+
+fn getManifestBuildZon(allocator: std.mem.Allocator, template: Template, lang: []const u8, name: []const u8) !TemplateContent {
+    const kind = if (template == .header_only)
+        if (std.mem.eql(u8, lang, "c")) manifest.TemplateKind.c_header_only else manifest.TemplateKind.cpp_header_only
+    else if (template == .library)
+        if (std.mem.eql(u8, lang, "c")) manifest.TemplateKind.c_lib else manifest.TemplateKind.cpp_lib
+    else
+        if (std.mem.eql(u8, lang, "c")) manifest.TemplateKind.c_exe else manifest.TemplateKind.cpp_exe;
+    const content = try manifest.renderTemplate(allocator, kind, name);
+    return .{ .content = content, .owned = true };
+}
+
 fn templateKind(template: Template, lang: []const u8) manifest.TemplateKind {
     if (template == .header_only) {
         return if (std.mem.eql(u8, lang, "c")) .c_header_only else .cpp_header_only;
@@ -247,38 +289,144 @@ fn templateKind(template: Template, lang: []const u8) manifest.TemplateKind {
     return if (std.mem.eql(u8, lang, "c")) .c_exe else .cpp_exe;
 }
 
-fn writeMainFile(ctx: *Context, path: []const u8, lang: []const u8) !void {
-    const content = if (std.mem.eql(u8, lang, "c"))
-        \\#include <stdio.h>
-        \\
-        \\int main(int argc, char* argv[]) {
-        \\    (void)argc;
-        \\    (void)argv;
-        \\    printf("Hello, World!\n");
-        \\    return 0;
-        \\}
-        \\
-    else
-        \\#include <iostream>
-        \\
-        \\int main(int argc, char* argv[]) {
-        \\    (void)argc;
-        \\    (void)argv;
-        \\    std::cout << "Hello, World!" << std::endl;
-        \\    return 0;
-        \\}
-        \\
-    ;
+fn writeMainFile(ctx: *Context, path: []const u8, name: []const u8, lang: []const u8) !void {
+    const template_rel = if (std.mem.eql(u8, lang, "c")) "c_project/src/main.c" else "cpp_exe/src/main.cpp";
+    const content = try readTemplateWithFallback(ctx, template_rel, lang, name);
+    defer {
+        if (content.owned) ctx.allocator.free(content.content);
+    }
+
+    const substituted = try manifest.substituteInContent(ctx.allocator, content.content, name);
+    defer ctx.allocator.free(substituted);
 
     const file = try ctx.cwd.createFile(path, .{});
     defer file.close();
-    try file.writeAll(content);
+    try file.writeAll(substituted);
+}
+
+fn readTemplateWithFallback(ctx: *Context, template_rel: []const u8, lang: []const u8, name: []const u8) !TemplateContent {
+    const template_dir = try manifest.getTemplateDir(ctx.allocator);
+    defer ctx.allocator.free(template_dir);
+    const template_path = try std.fmt.allocPrint(ctx.allocator, "{s}/{s}", .{ template_dir, template_rel });
+    defer ctx.allocator.free(template_path);
+
+    return readTemplateFile(ctx, template_path) catch |err| blk: {
+        if (err == error.FileNotFound) {
+            break :blk try getInlineMainTemplate(ctx.allocator, lang, name);
+        }
+        return err;
+    };
+}
+
+fn getInlineMainTemplate(allocator: std.mem.Allocator, lang: []const u8, name: []const u8) !TemplateContent {
+    const tpl = if (std.mem.eql(u8, lang, "c"))
+        \\#include <stdio.h>
+        \\#define APP_NAME "{{PROJECT_NAME}}"
+        \\int main(void) {
+        \\    printf("Hello from %s!\n", APP_NAME);
+        \\    return 0;
+        \\}
+    else
+        \\#include <iostream>
+        \\int main() {
+        \\    std::cout << "Hello from {{PROJECT_NAME}}!" << std::endl;
+        \\    return 0;
+        \\}
+    ;
+    const content = try manifest.substituteInContent(allocator, tpl, name);
+    return .{ .content = content, .owned = true };
+}
+
+fn readLibTemplate(ctx: *Context, template_rel: []const u8) !TemplateContent {
+    const template_dir = try manifest.getTemplateDir(ctx.allocator);
+    defer ctx.allocator.free(template_dir);
+    const template_path = try std.fmt.allocPrint(ctx.allocator, "{s}/{s}", .{ template_dir, template_rel });
+    defer ctx.allocator.free(template_path);
+    return readTemplateFile(ctx, template_path);
+}
+
+fn getInlineCppLibHeader(allocator: std.mem.Allocator, name: []const u8) !TemplateContent {
+    const tpl =
+        \\#pragma once
+        \\#include <string>
+        \\#include <string_view>
+        \\namespace {{PROJECT_NAME}} {
+        \\std::string greet(std::string_view name);
+        \\}
+    ;
+    const content = try manifest.substituteInContent(allocator, tpl, name);
+    return .{ .content = content, .owned = true };
+}
+
+fn getInlineCppLibSource(allocator: std.mem.Allocator, name: []const u8) !TemplateContent {
+    const tpl =
+        \\#include "lib.hpp"
+        \\#include <format>
+        \\namespace {{PROJECT_NAME}} {
+        \\std::string greet(std::string_view name) {
+        \\    return std::format("Hello, {}!", name);
+        \\}
+        \\}
+    ;
+    const content = try manifest.substituteInContent(allocator, tpl, name);
+    return .{ .content = content, .owned = true };
+}
+
+fn getInlineCppLibCppm(allocator: std.mem.Allocator, name: []const u8) !TemplateContent {
+    const tpl =
+        \\module;
+        \\#include <string>
+        \\#include <string_view>
+        \\export module {{PROJECT_NAME_SNAKE}};
+        \\export namespace {{PROJECT_NAME_SNAKE}} {
+        \\std::string greet(std::string_view name);
+        \\}
+    ;
+    const content = try manifest.substituteInContent(allocator, tpl, name);
+    return .{ .content = content, .owned = true };
 }
 
 fn writeLibraryFiles(ctx: *Context, src_path: []const u8, hdr_path: []const u8, name: []const u8, lang: []const u8) !void {
-    // Header file
-    const header = if (std.mem.eql(u8, lang, "c"))
-        try std.fmt.allocPrint(ctx.allocator,
+    if (std.mem.eql(u8, lang, "cpp")) {
+        const hdr_content = readLibTemplate(ctx, "cpp_lib/include/lib.hpp") catch |err| blk: {
+            if (err == error.FileNotFound) break :blk try getInlineCppLibHeader(ctx.allocator, name);
+            return err;
+        };
+        defer if (hdr_content.owned) ctx.allocator.free(hdr_content.content);
+        const header = try manifest.substituteInContent(ctx.allocator, hdr_content.content, name);
+        defer ctx.allocator.free(header);
+        const hdr_file = try ctx.cwd.createFile(hdr_path, .{});
+        defer hdr_file.close();
+        try hdr_file.writeAll(header);
+
+        const src_content = readLibTemplate(ctx, "cpp_lib/src/lib.cpp") catch |err| blk: {
+            if (err == error.FileNotFound) break :blk try getInlineCppLibSource(ctx.allocator, name);
+            return err;
+        };
+        defer if (src_content.owned) ctx.allocator.free(src_content.content);
+        const source = try manifest.substituteInContent(ctx.allocator, src_content.content, name);
+        defer ctx.allocator.free(source);
+        const src_file = try ctx.cwd.createFile(src_path, .{});
+        defer src_file.close();
+        try src_file.writeAll(source);
+
+        const cppm_content = readLibTemplate(ctx, "cpp_lib/src/lib.cppm") catch |err| blk: {
+            if (err == error.FileNotFound) break :blk try getInlineCppLibCppm(ctx.allocator, name);
+            return err;
+        };
+        defer if (cppm_content.owned) ctx.allocator.free(cppm_content.content);
+        const src_dir = std.fs.path.dirname(src_path) orelse "src";
+        const cppm_path = try std.fmt.allocPrint(ctx.allocator, "{s}/lib.cppm", .{src_dir});
+        defer ctx.allocator.free(cppm_path);
+        const cppm = try manifest.substituteInContent(ctx.allocator, cppm_content.content, name);
+        defer ctx.allocator.free(cppm);
+        const cppm_file = try ctx.cwd.createFile(cppm_path, .{});
+        defer cppm_file.close();
+        try cppm_file.writeAll(cppm);
+    } else {
+        const upper = try manifest.toUpperSnake(ctx.allocator, name);
+        defer ctx.allocator.free(upper);
+        const header = try std.fmt.allocPrint(ctx.allocator,
             \\#ifndef {s}_H
             \\#define {s}_H
             \\
@@ -286,81 +434,40 @@ fn writeLibraryFiles(ctx: *Context, src_path: []const u8, hdr_path: []const u8, 
             \\extern "C" {{
             \\#endif
             \\
-            \\/**
-            \\ * Example function
-            \\ */
             \\int {s}_init(void);
             \\
             \\#ifdef __cplusplus
             \\}}
             \\#endif
             \\
-            \\#endif /* {s}_H */
+            \\#endif
             \\
-        , .{ toUpperSnake(ctx.allocator, name), toUpperSnake(ctx.allocator, name), name, toUpperSnake(ctx.allocator, name) })
-    else
-        try std.fmt.allocPrint(ctx.allocator,
-            \\#pragma once
-            \\
-            \\namespace {s} {{
-            \\
-            \\/**
-            \\ * Example class
-            \\ */
-            \\class Library {{
-            \\public:
-            \\    Library();
-            \\    ~Library();
-            \\
-            \\    int init();
-            \\}};
-            \\
-            \\}} // namespace {s}
-            \\
-        , .{ name, name });
+        , .{ upper, upper, name });
+        defer ctx.allocator.free(header);
+        const hdr_file = try ctx.cwd.createFile(hdr_path, .{});
+        defer hdr_file.close();
+        try hdr_file.writeAll(header);
 
-    const hdr_file = try ctx.cwd.createFile(hdr_path, .{});
-    defer hdr_file.close();
-    try hdr_file.writeAll(header);
-
-    // Source file
-    const source = if (std.mem.eql(u8, lang, "c"))
-        try std.fmt.allocPrint(ctx.allocator,
+        const source = try std.fmt.allocPrint(ctx.allocator,
             \\#include "{s}.h"
             \\
             \\int {s}_init(void) {{
             \\    return 0;
             \\}}
             \\
-        , .{ name, name })
-    else
-        try std.fmt.allocPrint(ctx.allocator,
-            \\#include "{s}.hpp"
-            \\
-            \\namespace {s} {{
-            \\
-            \\Library::Library() {{
-            \\}}
-            \\
-            \\Library::~Library() {{
-            \\}}
-            \\
-            \\int Library::init() {{
-            \\    return 0;
-            \\}}
-            \\
-            \\}} // namespace {s}
-            \\
-        , .{ name, name, name });
-
-    const src_file = try ctx.cwd.createFile(src_path, .{});
-    defer src_file.close();
-    try src_file.writeAll(source);
+        , .{ name, name });
+        defer ctx.allocator.free(source);
+        const src_file = try ctx.cwd.createFile(src_path, .{});
+        defer src_file.close();
+        try src_file.writeAll(source);
+    }
 }
 
 fn writeHeaderOnlyFile(ctx: *Context, path: []const u8, name: []const u8, lang: []const u8) !void {
-    const content = if (std.mem.eql(u8, lang, "c"))
-        try std.fmt.allocPrint(ctx.allocator,
+    const content = if (std.mem.eql(u8, lang, "c")) blk: {
+        const upper = try manifest.toUpperSnake(ctx.allocator, name);
+        defer ctx.allocator.free(upper);
+        break :blk try std.fmt.allocPrint(ctx.allocator,
             \\#ifndef {s}_H
             \\#define {s}_H
             \\
@@ -381,8 +488,8 @@ fn writeHeaderOnlyFile(ctx: *Context, path: []const u8, name: []const u8, lang: 
             \\
             \\#endif /* {s}_H */
             \\
-        , .{ toUpperSnake(ctx.allocator, name), toUpperSnake(ctx.allocator, name), name, toUpperSnake(ctx.allocator, name) })
-    else
+        , .{ upper, upper, name, upper });
+    } else
         try std.fmt.allocPrint(ctx.allocator,
             \\#pragma once
             \\
@@ -400,6 +507,7 @@ fn writeHeaderOnlyFile(ctx: *Context, path: []const u8, name: []const u8, lang: 
             \\
         , .{ name, name });
 
+    defer ctx.allocator.free(content);
     const file = try ctx.cwd.createFile(path, .{});
     defer file.close();
     try file.writeAll(content);

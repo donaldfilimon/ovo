@@ -1,10 +1,31 @@
-# Ovo
+# OVO
 
-A small feedforward neural network library and CLI in Zig.
+A ZON-based package manager and build system for C/C++, designed as a modern replacement for CMake.
+
+## Overview
+
+OVO unifies package management and builds for C/C++ projects. Configuration lives in `build.zon` (Zig Object Notation). OVO uses Zig's compiler infrastructure and supports multiple compiler backends (Clang, GCC, MSVC, Zig CC).
 
 ## Requirements
 
-- [Zig](https://ziglang.org/) 0.16.x (see `.zigversion`)
+- [Zig](https://ziglang.org/) 0.16.x or master (see `.zigversion`)
+
+## Quick Start
+
+```bash
+# Create a new project
+ovo new myapp
+cd myapp
+
+# Build
+ovo build
+
+# Run (for executables)
+ovo run
+
+# Run tests
+ovo test
+```
 
 ## Build
 
@@ -13,86 +34,82 @@ zig build
 zig build test
 ```
 
-## CLI
+## CLI Commands
 
-### Run demo (2-4-1 network, one forward pass)
+### Basic
 
-```bash
-zig build run
+| Command | Description |
+|---------|-------------|
+| `ovo new <name>` | Create a new project |
+| `ovo init` | Initialize in current directory |
+| `ovo build [target]` | Build the project |
+| `ovo run [target] [-- args]` | Build and run |
+| `ovo test [pattern]` | Run tests |
+| `ovo clean` | Remove build artifacts |
+| `ovo install` | Install to system |
+
+### Package Management
+
+| Command | Description |
+|---------|-------------|
+| `ovo add <package>` | Add a dependency |
+| `ovo remove <package>` | Remove a dependency |
+| `ovo fetch` | Download dependencies |
+| `ovo update [pkg]` | Update dependencies |
+| `ovo lock` | Generate lock file |
+| `ovo deps` | Show dependency tree |
+
+### Tooling
+
+| Command | Description |
+|---------|-------------|
+| `ovo doc` | Generate documentation |
+| `ovo doctor` | Diagnose environment |
+| `ovo fmt` | Format source code |
+| `ovo lint` | Run linter |
+| `ovo info` | Project information |
+
+### Project Translation
+
+| Command | Description |
+|---------|-------------|
+| `ovo import <path>` | Import from CMake, Xcode, MSBuild, Meson |
+| `ovo export <format>` | Export to CMake, Xcode, MSBuild, Ninja |
+
+## build.zon Example
+
+```zon
+.{
+    .name = "myapp",
+    .version = "1.0.0",
+    .license = "MIT",
+    .targets = .{
+        .myapp = .{
+            .type = .executable,
+            .sources = .{ .{ .pattern = "src/**/*.cpp" } },
+            .include_dirs = .{ "include" },
+            .link = .{ "m" },
+        },
+    },
+    .defaults = .{
+        .cpp_standard = .cpp20,
+    },
+}
 ```
 
-### Inference (input features as arguments)
+## Architecture
 
-```bash
-zig build run -- 0.5 -0.3
-# NN forward -> [0.xxxxxx]
-```
+- **core/** — Data structures (project, target, dependency, profile)
+- **zon/** — ZON parsing and schema for build.zon
+- **build/** — Build orchestration (graph, scheduler, cache)
+- **compiler/** — Compiler abstraction (Clang, GCC, MSVC, Zig CC)
+- **package/** — Package resolution and fetching
+- **translate/** — Import/export (CMake, Xcode, MSBuild, Ninja)
+- **cli/** — CLI commands
 
-### Train from CSV
+## Legacy: Neural Module
 
-CSV format: one row per sample, last column is the target; all other columns are inputs. All values are floats.
-
-```bash
-zig build run -- train test_data.csv 10
-```
-
-Options:
-
-- `--layers a,b,c` — network architecture (e.g. `2,4,1`). First must match input columns, last must match target columns (1 for regression).
-- `--batch N` — minibatch size (default: 1, i.e. per-sample updates).
-
-Example:
-
-```bash
-zig build run -- train --layers 2,4,1 --batch 2 test_data.csv 100
-```
-
-## WebAssembly
-
-Build the WASM module and demo assets:
-
-```bash
-zig build wasm
-```
-
-Output is in `zig-out/wasm/` (`.wasm`, `index.html`, `app.js`). Serve that directory and open `index.html` in a browser. The demo uses a fixed [2,4,1] network with Xavier init and sigmoid; `nn_init()` and `nn_forward(input_offset, output_offset)` are exported for use from JavaScript.
-
-## Library usage
-
-Add this package as a dependency in `build.zig.zon` and in `build.zig`, then:
-
-```zig
-const ovo = @import("ovo");
-
-// Create a network (Xavier init, 2-4-1)
-var prng = std.Random.DefaultPrng.init(seed);
-var net = try ovo.Network.initXavier(allocator, &[_]usize{ 2, 4, 1 }, prng.random());
-defer net.deinit();
-
-// Forward pass
-const output = try net.forward(allocator, &input, ovo.activation.sigmoid);
-defer allocator.free(output);
-
-// Training step (MSE, single sample or batch)
-const loss_val = try ovo.trainStepMse(net, allocator, &input, &target, 0.1,
-    ovo.activation.sigmoid, ovo.activation.sigmoidDerivative);
-
-// Save / load
-try net.save(writer);
-var loaded = try ovo.Network.load(allocator, reader);
-defer loaded.deinit();
-```
-
-## Modules
-
-| Module        | Description                                      |
-|---------------|--------------------------------------------------|
-| `ovo.network` | `Network`, `Gradients`, forward, training steps  |
-| `ovo.layer`   | Layer offset/count helpers for weights and biases |
-| `ovo.activation` | Sigmoid, ReLU, tanh, leaky ReLU, softmax + derivatives |
-| `ovo.loss`    | MSE, binary/cross-entropy + gradients            |
-| `ovo.csv`     | CSV parsing for training data                    |
-| `ovo.cli`     | CLI helpers                                      |
+OVO includes a minimal neural network module (`src/neural/`) for ML experimentation. It is separate from the package manager. See `src/neural/` for activation, layers, loss, and training utilities.
 
 ## License
 
