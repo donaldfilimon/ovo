@@ -5,6 +5,11 @@
 
 const std = @import("std");
 const commands = @import("commands.zig");
+const manifest = @import("manifest.zig");
+const zon = @import("zon");
+
+const zon_parser = zon.parser;
+const zon_schema = zon.schema;
 
 const Context = commands.Context;
 const TermWriter = commands.TermWriter;
@@ -33,13 +38,7 @@ fn printHelp(writer: *TermWriter) !void {
     try writer.dim("    ovo fetch --locked           # Use lock file versions\n", .{});
 }
 
-/// Simulated dependency info
-const DepInfo = struct {
-    name: []const u8,
-    version: []const u8,
-    source: []const u8,
-    size_kb: u32,
-};
+const sourceTypeName = zon_schema.DependencySource.typeName;
 
 /// Execute the fetch command
 pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
@@ -77,13 +76,13 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
 
     // Check for build.zon
     const manifest_exists = blk: {
-        ctx.cwd.access("build.zon", .{}) catch break :blk false;
+        ctx.cwd.access(manifest.manifest_filename, .{}) catch break :blk false;
         break :blk true;
     };
 
     if (!manifest_exists) {
         try ctx.stderr.err("error: ", .{});
-        try ctx.stderr.print("no build.zon found in current directory\n", .{});
+        try ctx.stderr.print("no {s} found in current directory\n", .{manifest.manifest_filename});
         return 1;
     }
 
@@ -106,18 +105,28 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
     try ctx.stdout.success("*", .{});
     try ctx.stdout.print(" Resolving dependency graph...\n", .{});
 
-    // Simulated dependencies
-    const deps = [_]DepInfo{
-        .{ .name = "fmt", .version = "10.1.1", .source = "registry", .size_kb = 450 },
-        .{ .name = "spdlog", .version = "1.12.0", .source = "registry", .size_kb = 280 },
-        .{ .name = "nlohmann_json", .version = "3.11.2", .source = "registry", .size_kb = 890 },
-        .{ .name = "catch2", .version = "3.4.0", .source = "registry", .size_kb = 520 },
+    // Parse build.zon to get real dependencies
+    var project = zon_parser.parseFile(ctx.allocator, manifest.manifest_filename) catch |err| {
+        try ctx.stderr.err("error: ", .{});
+        try ctx.stderr.print("failed to parse {s}: {}\n", .{ manifest.manifest_filename, err });
+        return 1;
     };
+    defer project.deinit(ctx.allocator);
+
+    const deps = project.dependencies orelse {
+        try ctx.stdout.info("  No dependencies to fetch.\n", .{});
+        return 0;
+    };
+
+    if (deps.len == 0) {
+        try ctx.stdout.info("  No dependencies to fetch.\n", .{});
+        return 0;
+    }
 
     if (verbose) {
         try ctx.stdout.dim("    Found {d} dependencies to fetch\n", .{deps.len});
         for (deps) |dep| {
-            try ctx.stdout.dim("      - {s} @ {s}\n", .{ dep.name, dep.version });
+            try ctx.stdout.dim("      - {s} ({s})\n", .{ dep.name, sourceTypeName(dep.source) });
         }
     }
 
@@ -126,11 +135,6 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
     try ctx.stdout.success("*", .{});
     try ctx.stdout.print(" Downloading packages...\n", .{});
 
-    var total_size: u32 = 0;
-    for (deps) |dep| {
-        total_size += dep.size_kb;
-    }
-
     // Show progress bar
     var progress = ProgressBar.init(ctx.stdout, deps.len, "Downloading");
     for (deps, 0..) |dep, idx| {
@@ -138,7 +142,7 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
 
         if (verbose) {
             try ctx.stdout.print("\n", .{});
-            try ctx.stdout.dim("      {s} ({d}KB)", .{ dep.name, dep.size_kb });
+            try ctx.stdout.dim("      {s} ({s})", .{ dep.name, sourceTypeName(dep.source) });
         }
 
         // In real implementation, would actually download here
@@ -163,8 +167,7 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
 
     // Summary
     try ctx.stdout.print("\n", .{});
-    try ctx.stdout.success("Fetched {d} packages", .{deps.len});
-    try ctx.stdout.dim(" ({d}KB total)\n", .{total_size});
+    try ctx.stdout.success("Fetched {d} packages\n", .{deps.len});
 
     // Show tree of what was fetched
     try ctx.stdout.print("\n", .{});
@@ -173,8 +176,7 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
         try ctx.stdout.print("  ", .{});
         try ctx.stdout.success("+", .{});
         try ctx.stdout.print(" {s} ", .{dep.name});
-        try ctx.stdout.info("v{s}", .{dep.version});
-        try ctx.stdout.dim(" ({s})\n", .{dep.source});
+        try ctx.stdout.dim("({s})\n", .{sourceTypeName(dep.source)});
     }
 
     return 0;

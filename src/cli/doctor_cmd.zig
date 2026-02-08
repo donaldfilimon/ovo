@@ -27,23 +27,8 @@ fn printHelp(writer: *TermWriter) !void {
     try writer.dim("    ovo doctor    # Run diagnostics\n", .{});
 }
 
-fn inPath(allocator: std.mem.Allocator, name: []const u8) bool {
-    var key_buf: [8]u8 = undefined;
-    @memcpy(key_buf[0..4], "PATH");
-    key_buf[4] = 0;
-    const path_env = std.c.getenv(@ptrCast(&key_buf)) orelse return false;
-    const path_str = std.mem.span(path_env);
-    var iter = std.mem.splitScalar(u8, path_str, if (builtin.os.tag == .windows) ';' else ':');
-    while (iter.next()) |dir| {
-        const full = std.fs.path.join(allocator, &.{ dir, name }) catch continue;
-        defer allocator.free(full);
-        var path_buf: [4096]u8 = undefined;
-        if (full.len >= path_buf.len) continue;
-        @memcpy(path_buf[0..full.len], full);
-        path_buf[full.len] = 0;
-        if (std.c.access(@ptrCast(&path_buf), std.c.F_OK) == 0) return true;
-    }
-    return false;
+fn inPath(_: std.mem.Allocator, name: []const u8) bool {
+    return commands.findInPathC(name);
 }
 
 /// Execute the doctor command

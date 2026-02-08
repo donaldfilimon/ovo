@@ -464,6 +464,18 @@ pub const DependencySource = union(enum) {
         fallback: ?*Dependency = null,
     },
 
+    /// Return a human-readable label for the source type.
+    pub fn typeName(self: DependencySource) []const u8 {
+        return switch (self) {
+            .git => "git",
+            .url => "url",
+            .path => "path",
+            .vcpkg => "vcpkg",
+            .conan => "conan",
+            .system => "system",
+        };
+    }
+
     pub fn deinit(self: *DependencySource, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .git => |*g| {

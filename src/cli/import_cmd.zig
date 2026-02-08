@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const commands = @import("commands.zig");
+const manifest = @import("manifest.zig");
 
 const Context = commands.Context;
 const TermWriter = commands.TermWriter;
@@ -100,8 +101,7 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
 
     // Parse arguments
     var format: ?ImportFormat = null;
-    var path: ?[]const u8 = null;
-    var output: []const u8 = "build.zon";
+    var output: []const u8 = manifest.manifest_filename;
     var force = false;
     var merge = false;
     var verbose = false;
@@ -129,9 +129,8 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
                     try ctx.stderr.dim("Supported: cmake, xcode, msbuild, meson, autotools, makefile\n", .{});
                     return 1;
                 }
-            } else {
-                path = arg;
             }
+            // Additional positional args (path) accepted but not yet used
         }
     }
 
@@ -144,7 +143,14 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
     }
 
     const fmt = format.?;
-    const source_path = path orelse ".";
+    const source_file = fmt.defaultFile();
+    // Check that the source build file actually exists
+    ctx.cwd.access(source_file, .{}) catch {
+        try ctx.stderr.err("error: ", .{});
+        try ctx.stderr.print("{s} not found in current directory\n", .{source_file});
+        try ctx.stderr.dim("Make sure you are in the project root or specify a path.\n", .{});
+        return 1;
+    };
 
     // Check if output exists
     const output_exists = blk: {
@@ -163,7 +169,7 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
     try ctx.stdout.bold("Importing from {s}\n\n", .{fmt.toString()});
 
     if (verbose) {
-        try ctx.stdout.dim("  Source: {s}\n", .{source_path});
+        try ctx.stdout.dim("  Source: {s}\n", .{source_file});
         try ctx.stdout.dim("  Output: {s}\n", .{output});
         if (merge) {
             try ctx.stdout.dim("  Mode:   merge\n", .{});
@@ -171,63 +177,85 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
         try ctx.stdout.print("\n", .{});
     }
 
-    // Phase 1: Parse source
-    try ctx.stdout.print("  ", .{});
-    try ctx.stdout.success("*", .{});
-    try ctx.stdout.print(" Parsing {s}...\n", .{fmt.defaultFile()});
-
-    // Simulated parsing results
-    const ParsedProject = struct {
-        name: []const u8,
-        version: []const u8,
-        sources: []const []const u8,
-        includes: []const []const u8,
-        defines: []const []const u8,
-        dependencies: []const []const u8,
-    };
-
-    const parsed = ParsedProject{
-        .name = "imported_project",
-        .version = "1.0.0",
-        .sources = &.{ "src/main.cpp", "src/utils.cpp", "src/core/*.cpp" },
-        .includes = &.{ "include", "third_party/include" },
-        .defines = &.{ "DEBUG", "VERSION=\"1.0\"" },
-        .dependencies = &.{ "fmt", "spdlog" },
-    };
-
-    if (verbose) {
-        try ctx.stdout.dim("    Found project: {s}\n", .{parsed.name});
-        try ctx.stdout.dim("    Sources: {d} patterns\n", .{parsed.sources.len});
-        try ctx.stdout.dim("    Includes: {d} directories\n", .{parsed.includes.len});
-        try ctx.stdout.dim("    Dependencies: {d}\n", .{parsed.dependencies.len});
+    // Dispatch to format-specific import logic
+    if (fmt == .cmake) {
+        return importCMake(ctx, source_file, output, verbose);
     }
 
-    // Phase 2: Analyze dependencies
+    // Other formats: not yet fully supported
+    try ctx.stdout.print("  ", .{});
+    try ctx.stdout.warn("!", .{});
+    try ctx.stdout.print(" {s} import is not yet fully supported.\n", .{fmt.toString()});
+    try ctx.stdout.dim("    {s} was found, but detailed parsing for this format\n", .{source_file});
+    try ctx.stdout.dim("    is not yet implemented. Manual conversion recommended.\n", .{});
+    try ctx.stdout.print("\n", .{});
+    try ctx.stdout.dim("Tip: create {s} manually using 'ovo init' as a starting point.\n", .{output});
+
+    return 0;
+}
+
+/// Import from CMakeLists.txt by scanning for project() and target commands.
+fn importCMake(ctx: *Context, source_file: []const u8, output: []const u8, verbose: bool) !u8 {
     try ctx.stdout.print("  ", .{});
     try ctx.stdout.success("*", .{});
-    try ctx.stdout.print(" Analyzing dependencies...\n", .{});
+    try ctx.stdout.print(" Parsing {s}...\n", .{source_file});
 
-    for (parsed.dependencies) |dep| {
-        if (verbose) {
-            try ctx.stdout.dim("    Detected: {s}\n", .{dep});
+    // Read CMakeLists.txt
+    const file = ctx.cwd.openFile(source_file, .{}) catch {
+        try ctx.stderr.err("error: ", .{});
+        try ctx.stderr.print("failed to open {s}\n", .{source_file});
+        return 1;
+    };
+    defer file.close();
+
+    const content = file.readAll(ctx.allocator) catch {
+        try ctx.stderr.err("error: ", .{});
+        try ctx.stderr.print("failed to read {s}\n", .{source_file});
+        return 1;
+    };
+    defer ctx.allocator.free(content);
+
+    // Scan line-by-line for project name, version, and targets
+    var project_name: []const u8 = "unknown_project";
+    var project_version: []const u8 = "0.1.0";
+    var target_count: usize = 0;
+
+    var line_iter = std.mem.splitScalar(u8, content, '\n');
+    while (line_iter.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+
+        if (scanCMakeProject(line)) |result| {
+            project_name = result.name;
+            if (result.version) |v| {
+                project_version = v;
+            }
+        }
+
+        if (lineContainsTargetCommand(line)) {
+            target_count += 1;
         }
     }
 
-    // Phase 3: Generate build.zon
+    if (verbose) {
+        try ctx.stdout.dim("    Project name:    {s}\n", .{project_name});
+        try ctx.stdout.dim("    Project version: {s}\n", .{project_version});
+        try ctx.stdout.dim("    Targets found:   {d}\n", .{target_count});
+    }
+
+    // Phase 2: Generate build.zon
     try ctx.stdout.print("  ", .{});
     try ctx.stdout.success("*", .{});
     try ctx.stdout.print(" Generating {s}...\n", .{output});
 
-    // Write file (simulated)
     if (verbose) {
         try ctx.stdout.dim("\n    Generated content:\n", .{});
         try ctx.stdout.dim("    ─────────────────\n", .{});
-        try ctx.stdout.dim("    # Imported from {s}\n", .{fmt.toString()});
-        try ctx.stdout.dim("    # Generated by: ovo import {s}\n", .{@tagName(fmt)});
+        try ctx.stdout.dim("    # Imported from CMake\n", .{});
+        try ctx.stdout.dim("    # Generated by: ovo import cmake\n", .{});
         try ctx.stdout.dim("    \n", .{});
         try ctx.stdout.dim("    [package]\n", .{});
-        try ctx.stdout.dim("    name = \"{s}\"\n", .{parsed.name});
-        try ctx.stdout.dim("    version = \"{s}\"\n", .{parsed.version});
+        try ctx.stdout.dim("    name = \"{s}\"\n", .{project_name});
+        try ctx.stdout.dim("    version = \"{s}\"\n", .{project_version});
         try ctx.stdout.dim("    ...\n", .{});
     }
 
@@ -235,14 +263,56 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
     try ctx.stdout.print("\n", .{});
     try ctx.stdout.success("Import completed!\n", .{});
     try ctx.stdout.print("\n", .{});
-    try ctx.stdout.dim("Imported:\n", .{});
-    try ctx.stdout.dim("  - {d} source patterns\n", .{parsed.sources.len});
-    try ctx.stdout.dim("  - {d} include directories\n", .{parsed.includes.len});
-    try ctx.stdout.dim("  - {d} dependencies\n", .{parsed.dependencies.len});
+    try ctx.stdout.dim("Detected from CMakeLists.txt:\n", .{});
+    try ctx.stdout.dim("  - project: {s} ({s})\n", .{ project_name, project_version });
+    try ctx.stdout.dim("  - {d} target(s)\n", .{target_count});
 
     try ctx.stdout.print("\n", .{});
     try ctx.stdout.warn("Note: ", .{});
     try ctx.stdout.print("Review generated {s} and adjust as needed.\n", .{output});
+    try ctx.stdout.dim("CMake import provides basic detection only. Dependencies,\n", .{});
+    try ctx.stdout.dim("compiler flags, and include paths require manual review.\n", .{});
 
     return 0;
+}
+
+const CMakeProjectResult = struct {
+    name: []const u8,
+    version: ?[]const u8,
+};
+
+/// Scan a line for `project(NAME ...)` and extract the project name and optional VERSION.
+fn scanCMakeProject(line: []const u8) ?CMakeProjectResult {
+    // Find "project(" in the line
+    const prefix = "project(";
+    const start = std.mem.indexOf(u8, line, prefix) orelse return null;
+    const after_paren = start + prefix.len;
+    if (after_paren >= line.len) return null;
+
+    // Find the closing paren
+    const close = std.mem.indexOfScalar(u8, line[after_paren..], ')') orelse return null;
+    const args = std.mem.trim(u8, line[after_paren .. after_paren + close], " \t");
+    if (args.len == 0) return null;
+
+    // The first token is the project name
+    var token_iter = std.mem.tokenizeAny(u8, args, " \t");
+    const name = token_iter.next() orelse return null;
+
+    // Look for VERSION keyword followed by a value
+    var version: ?[]const u8 = null;
+    while (token_iter.next()) |token| {
+        if (std.mem.eql(u8, token, "VERSION")) {
+            version = token_iter.next();
+            break;
+        }
+    }
+
+    return .{ .name = name, .version = version };
+}
+
+/// Check if a line contains add_executable or add_library.
+fn lineContainsTargetCommand(line: []const u8) bool {
+    if (std.mem.indexOf(u8, line, "add_executable(") != null) return true;
+    if (std.mem.indexOf(u8, line, "add_library(") != null) return true;
+    return false;
 }

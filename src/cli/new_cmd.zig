@@ -625,14 +625,3 @@ fn writeGitignore(ctx: *Context, path: []const u8) !void {
     try file.writeAll(content);
 }
 
-fn toUpperSnake(allocator: std.mem.Allocator, s: []const u8) []const u8 {
-    var result = allocator.alloc(u8, s.len) catch return s;
-    for (s, 0..) |c, i| {
-        if (c == '-') {
-            result[i] = '_';
-        } else {
-            result[i] = std.ascii.toUpper(c);
-        }
-    }
-    return result;
-}

@@ -5,10 +5,13 @@
 
 const std = @import("std");
 const commands = @import("commands.zig");
+const manifest = @import("manifest.zig");
+const zon_parser = @import("zon").parser;
+const zon_schema = @import("zon").schema;
+const zon_writer = @import("zon").writer;
 
 const Context = commands.Context;
 const TermWriter = commands.TermWriter;
-const Spinner = commands.Spinner;
 
 /// Dependency source type
 pub const SourceType = enum {
@@ -135,13 +138,13 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
 
     // Check for build.zon
     const manifest_exists = blk: {
-        ctx.cwd.access("build.zon", .{}) catch break :blk false;
+        ctx.cwd.access(manifest.manifest_filename, .{}) catch break :blk false;
         break :blk true;
     };
 
     if (!manifest_exists) {
         try ctx.stderr.err("error: ", .{});
-        try ctx.stderr.print("no build.zon found in current directory\n", .{});
+        try ctx.stderr.print("no {s} found in current directory\n", .{manifest.manifest_filename});
         try ctx.stderr.dim("Run 'ovo init' to create a new project.\n", .{});
         return 1;
     }
@@ -174,112 +177,101 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
         return 1;
     };
 
-    // Print what we're doing
-    try ctx.stdout.bold("Adding", .{});
-    try ctx.stdout.print(" dependency ", .{});
-    try ctx.stdout.success("'{s}'", .{name});
-    if (is_dev) {
-        try ctx.stdout.dim(" (dev)", .{});
-    }
-    try ctx.stdout.print("\n", .{});
+    // Parse existing build.zon
+    var project = zon_parser.parseFile(ctx.allocator, manifest.manifest_filename) catch |err| {
+        try ctx.stderr.err("error: ", .{});
+        try ctx.stderr.print("failed to parse {s}: {}\n", .{ manifest.manifest_filename, err });
+        return 1;
+    };
+    defer project.deinit(ctx.allocator);
 
-    // Show source info
-    try ctx.stdout.dim("  Source: {s}", .{source_type.toString()});
-    switch (source_type) {
-        .git => {
-            if (git_url) |url| {
-                try ctx.stdout.dim(" ({s})", .{url});
+    // Check if dependency already exists
+    if (project.dependencies) |deps| {
+        for (deps) |dep| {
+            if (std.mem.eql(u8, dep.name, name)) {
+                try ctx.stderr.warn("warning: ", .{});
+                try ctx.stderr.print("'{s}' is already a dependency\n", .{name});
+                return 1;
             }
-            if (git_branch) |branch| {
-                try ctx.stdout.dim(" branch:{s}", .{branch});
-            }
-            if (git_tag) |tag| {
-                try ctx.stdout.dim(" tag:{s}", .{tag});
-            }
-        },
-        .path => {
-            if (local_path) |path| {
-                try ctx.stdout.dim(" ({s})", .{path});
-            }
-        },
-        else => {},
+        }
     }
-    try ctx.stdout.print("\n", .{});
 
-    // Simulate resolving the package
-    try ctx.stdout.print("\n", .{});
+    // Build new dependency source based on parsed flags
+    const dep_source: zon_schema.DependencySource = switch (source_type) {
+        .git => .{ .git = .{
+            .url = try ctx.allocator.dupe(u8, git_url orelse ""),
+            .branch = if (git_branch) |b| try ctx.allocator.dupe(u8, b) else null,
+            .tag = if (git_tag) |t| try ctx.allocator.dupe(u8, t) else null,
+            .commit = if (git_rev) |r| try ctx.allocator.dupe(u8, r) else null,
+        } },
+        .path => .{ .path = try ctx.allocator.dupe(u8, local_path orelse ".") },
+        .vcpkg => .{ .vcpkg = .{
+            .name = try ctx.allocator.dupe(u8, name),
+            .version = if (version) |v| try ctx.allocator.dupe(u8, v) else null,
+        } },
+        .conan => .{ .conan = .{
+            .name = try ctx.allocator.dupe(u8, name),
+            .version = try ctx.allocator.dupe(u8, version orelse "1.0.0"),
+        } },
+        .registry => .{ .system = .{
+            .name = try ctx.allocator.dupe(u8, name),
+        } },
+    };
+
+    const new_dep = zon_schema.Dependency{
+        .name = try ctx.allocator.dupe(u8, name),
+        .source = dep_source,
+    };
+
+    // Grow the dependencies array: allocate new slice, copy old entries, append new
+    const old_deps = project.dependencies orelse &[_]zon_schema.Dependency{};
+    const new_deps = try ctx.allocator.alloc(zon_schema.Dependency, old_deps.len + 1);
+    @memcpy(new_deps[0..old_deps.len], old_deps);
+    new_deps[old_deps.len] = new_dep;
+
+    // Free the old dependencies slice (but not the individual entries, they are still referenced)
+    if (project.dependencies) |deps| {
+        ctx.allocator.free(deps);
+    }
+    project.dependencies = new_deps;
+
+    // Write back to build.zon
     try ctx.stdout.print("  ", .{});
     try ctx.stdout.success("*", .{});
-    try ctx.stdout.print(" Resolving package...\n", .{});
+    try ctx.stdout.print(" Updating {s}...\n", .{manifest.manifest_filename});
 
-    // In real implementation, would fetch package metadata here
-    const resolved_version = version orelse "1.0.0";
+    const content = zon_writer.writeProject(ctx.allocator, &project, .{}) catch |err| {
+        try ctx.stderr.err("error: ", .{});
+        try ctx.stderr.print("failed to serialize {s}: {}\n", .{ manifest.manifest_filename, err });
+        return 1;
+    };
+    defer ctx.allocator.free(content);
 
-    try ctx.stdout.print("  ", .{});
-    try ctx.stdout.success("*", .{});
-    try ctx.stdout.print(" Found version ", .{});
-    try ctx.stdout.info("{s}\n", .{resolved_version});
-
-    // Update build.zon
-    try ctx.stdout.print("  ", .{});
-    try ctx.stdout.success("*", .{});
-    try ctx.stdout.print(" Updating build.zon...\n", .{});
-
-    // In real implementation, would parse and update build.zon
-    // For now, just print what would be added
-    try ctx.stdout.dim("    Added to [{s}]:\n", .{if (is_dev) "dev-dependencies" else "dependencies"});
-    try ctx.stdout.dim("    {s} = {{ ", .{name});
-
-    switch (source_type) {
-        .registry => {
-            try ctx.stdout.dim("version = \"{s}\"", .{resolved_version});
-        },
-        .git => {
-            try ctx.stdout.dim("git = \"{s}\"", .{git_url.?});
-            if (git_branch) |branch| {
-                try ctx.stdout.dim(", branch = \"{s}\"", .{branch});
-            } else if (git_tag) |tag| {
-                try ctx.stdout.dim(", tag = \"{s}\"", .{tag});
-            } else if (git_rev) |rev| {
-                try ctx.stdout.dim(", rev = \"{s}\"", .{rev});
-            }
-        },
-        .path => {
-            try ctx.stdout.dim("path = \"{s}\"", .{local_path.?});
-        },
-        .vcpkg => {
-            try ctx.stdout.dim("vcpkg = \"{s}\"", .{name});
-            if (version) |v| {
-                try ctx.stdout.dim(", version = \"{s}\"", .{v});
-            }
-        },
-        .conan => {
-            try ctx.stdout.dim("conan = \"{s}/{s}\"", .{ name, resolved_version });
-        },
-    }
-
-    if (is_optional) {
-        try ctx.stdout.dim(", optional = true", .{});
-    }
-    if (features) |f| {
-        try ctx.stdout.dim(", features = [{s}]", .{f});
-    }
-
-    try ctx.stdout.dim(" }}\n", .{});
-
-    // Fetch the dependency
-    try ctx.stdout.print("  ", .{});
-    try ctx.stdout.success("*", .{});
-    try ctx.stdout.print(" Fetching dependency...\n", .{});
+    const file = ctx.cwd.createFile(manifest.manifest_filename, .{}) catch |err| {
+        try ctx.stderr.err("error: ", .{});
+        try ctx.stderr.print("failed to write {s}: {}\n", .{ manifest.manifest_filename, err });
+        return 1;
+    };
+    defer file.close();
+    file.writeAll(content) catch |err| {
+        try ctx.stderr.err("error: ", .{});
+        try ctx.stderr.print("failed to write {s}: {}\n", .{ manifest.manifest_filename, err });
+        return 1;
+    };
 
     // Print success
     try ctx.stdout.print("\n", .{});
-    try ctx.stdout.success("Added '{s}' to dependencies\n", .{name});
+    const dep_kind = if (is_dev) "dev-dependencies" else "dependencies";
+    try ctx.stdout.success("Added '{s}' to {s}\n", .{ name, dep_kind });
 
-    // Show next steps
-    try ctx.stdout.print("\n", .{});
-    try ctx.stdout.dim("To use in your code:\n", .{});
-    try ctx.stdout.dim("  #include <{s}/{s}.h>\n", .{ name, name });
+    // Show source info
+    try ctx.stdout.dim("  Source: {s}\n", .{source_type.toString()});
+    if (is_optional) {
+        try ctx.stdout.dim("  Optional: yes\n", .{});
+    }
+    if (features) |f| {
+        try ctx.stdout.dim("  Features: {s}\n", .{f});
+    }
 
     return 0;
 }

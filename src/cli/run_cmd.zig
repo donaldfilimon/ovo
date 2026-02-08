@@ -6,6 +6,7 @@
 const std = @import("std");
 const commands = @import("commands.zig");
 const build_cmd = @import("build_cmd.zig");
+const manifest = @import("manifest.zig");
 const zon = @import("zon");
 
 // C library function for execution
@@ -90,13 +91,13 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
 
     // Check for build.zon
     const manifest_exists = blk: {
-        ctx.cwd.access("build.zon", .{}) catch break :blk false;
+        ctx.cwd.access(manifest.manifest_filename, .{}) catch break :blk false;
         break :blk true;
     };
 
     if (!manifest_exists) {
         try ctx.stderr.err("error: ", .{});
-        try ctx.stderr.print("no build.zon found in current directory\n", .{});
+        try ctx.stderr.print("no {s} found in current directory\n", .{manifest.manifest_filename});
         return 1;
     }
 
@@ -114,7 +115,7 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
     var default_name_buf: [256]u8 = undefined;
     const exe_name = target orelse blk: {
         // Parse build.zon to get first executable target
-        var project = zon.parser.parseFile(ctx.allocator, "build.zon") catch break :blk "main";
+        var project = zon.parser.parseFile(ctx.allocator, manifest.manifest_filename) catch break :blk "main";
         defer project.deinit(ctx.allocator);
         for (project.targets) |t| {
             if (t.target_type == .executable) {

@@ -202,9 +202,50 @@ pub const DirHandle = struct {
         }
     }
 
-    /// Delete a directory tree recursively (stub - complex to implement with C lib)
-    pub fn deleteTree(_: DirHandle, _: []const u8) !void {
-        // For now, this is a no-op - implementing recursive delete requires more work
+    /// Delete a directory tree recursively using C library APIs
+    pub fn deleteTree(_: DirHandle, path: []const u8) !void {
+        deleteTreeRecursive(path) catch return error.AccessDenied;
+    }
+
+    const extern_c = struct {
+        extern "c" fn unlink(path: [*:0]const u8) c_int;
+        extern "c" fn rmdir(path: [*:0]const u8) c_int;
+    };
+
+    fn getDirentName(entry: *const std.c.dirent) [*:0]const u8 {
+        return @ptrCast(&entry.name);
+    }
+
+    fn deleteTreeRecursive(path: []const u8) !void {
+        var path_buf: [4096]u8 = undefined;
+        if (path.len >= path_buf.len) return error.NameTooLong;
+        @memcpy(path_buf[0..path.len], path);
+        path_buf[path.len] = 0;
+
+        const dir = std.c.opendir(@ptrCast(&path_buf)) orelse return error.FileNotFound;
+        defer _ = std.c.closedir(dir);
+
+        while (std.c.readdir(dir)) |entry| {
+            const name = std.mem.span(getDirentName(entry));
+            if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) continue;
+
+            var child_buf: [4096]u8 = undefined;
+            if (path.len + 1 + name.len >= child_buf.len) continue;
+            @memcpy(child_buf[0..path.len], path);
+            child_buf[path.len] = '/';
+            @memcpy(child_buf[path.len + 1 ..][0..name.len], name);
+            child_buf[path.len + 1 + name.len] = 0;
+
+            const child_path = child_buf[0 .. path.len + 1 + name.len];
+
+            if (entry.type == std.c.DT.DIR) {
+                try deleteTreeRecursive(child_path);
+            } else {
+                _ = extern_c.unlink(@ptrCast(&child_buf));
+            }
+        }
+
+        _ = extern_c.rmdir(@ptrCast(&path_buf));
     }
 
     /// Get the real path of a file
@@ -346,6 +387,43 @@ pub fn hasVerboseFlag(args: []const []const u8) bool {
     return false;
 }
 
+/// Check if a file exists using C library access()
+pub fn fileExistsC(path: []const u8) bool {
+    var path_buf: [4096]u8 = undefined;
+    if (path.len >= path_buf.len) return false;
+    @memcpy(path_buf[0..path.len], path);
+    path_buf[path.len] = 0;
+    return std.c.access(@ptrCast(&path_buf), std.c.F_OK) == 0;
+}
+
+/// Search PATH for an executable by name.
+pub fn findInPathC(name: []const u8) bool {
+    var key_buf: [8]u8 = undefined;
+    @memcpy(key_buf[0..4], "PATH");
+    key_buf[4] = 0;
+    const path_env = std.c.getenv(@ptrCast(&key_buf)) orelse return false;
+    const path_str = std.mem.span(path_env);
+    const sep: u8 = if (@import("builtin").os.tag == .windows) ';' else ':';
+    var iter = std.mem.splitScalar(u8, path_str, sep);
+    while (iter.next()) |dir| {
+        var check_buf: [4096]u8 = undefined;
+        if (dir.len + 1 + name.len >= check_buf.len) continue;
+        @memcpy(check_buf[0..dir.len], dir);
+        check_buf[dir.len] = '/';
+        @memcpy(check_buf[dir.len + 1 ..][0..name.len], name);
+        check_buf[dir.len + 1 + name.len] = 0;
+        if (std.c.access(@ptrCast(&check_buf), std.c.F_OK) == 0) return true;
+    }
+    return false;
+}
+
+/// Check if the project manifest file exists in the current directory
+pub fn manifestExists(cwd: DirHandle) bool {
+    const manifest_mod = @import("manifest.zig");
+    cwd.access(manifest_mod.manifest_filename, .{}) catch return false;
+    return true;
+}
+
 /// Command execution error
 pub const CommandError = error{
     UnknownCommand,
@@ -398,49 +476,35 @@ pub fn dispatch(allocator: std.mem.Allocator, args: []const []const u8) !u8 {
     }
 }
 
-fn dispatchCommand(command: []const u8, args: []const []const u8, ctx: *Context) !u8 {
-    if (std.mem.eql(u8, command, "build")) {
-        return build_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "run")) {
-        return run_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "test")) {
-        return test_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "new")) {
-        return new_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "init")) {
-        return init_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "add")) {
-        return add_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "remove")) {
-        return remove_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "fetch")) {
-        return fetch_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "clean")) {
-        return clean_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "install")) {
-        return install_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "import")) {
-        return import_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "export")) {
-        return export_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "info")) {
-        return info_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "deps")) {
-        return deps_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "fmt")) {
-        return fmt_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "lint")) {
-        return lint_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "doc")) {
-        return doc_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "doctor")) {
-        return doctor_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "update")) {
-        return update_cmd.execute(ctx, args);
-    } else if (std.mem.eql(u8, command, "lock")) {
-        return lock_cmd.execute(ctx, args);
-    }
+const CommandHandler = *const fn (*Context, []const []const u8) anyerror!u8;
 
+const command_dispatch = std.StaticStringMap(CommandHandler).initComptime(.{
+    .{ "build", build_cmd.execute },
+    .{ "run", run_cmd.execute },
+    .{ "test", test_cmd.execute },
+    .{ "new", new_cmd.execute },
+    .{ "init", init_cmd.execute },
+    .{ "add", add_cmd.execute },
+    .{ "remove", remove_cmd.execute },
+    .{ "fetch", fetch_cmd.execute },
+    .{ "clean", clean_cmd.execute },
+    .{ "install", install_cmd.execute },
+    .{ "import", import_cmd.execute },
+    .{ "export", export_cmd.execute },
+    .{ "info", info_cmd.execute },
+    .{ "deps", deps_cmd.execute },
+    .{ "fmt", fmt_cmd.execute },
+    .{ "lint", lint_cmd.execute },
+    .{ "doc", doc_cmd.execute },
+    .{ "doctor", doctor_cmd.execute },
+    .{ "update", update_cmd.execute },
+    .{ "lock", lock_cmd.execute },
+});
+
+fn dispatchCommand(command: []const u8, args: []const []const u8, ctx: *Context) !u8 {
+    if (command_dispatch.get(command)) |handler| {
+        return handler(ctx, args);
+    }
     return error.UnknownCommand;
 }
 

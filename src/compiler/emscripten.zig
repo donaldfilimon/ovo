@@ -7,6 +7,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const interface = @import("interface.zig");
 const modules = @import("modules.zig");
+const compat = @import("util").compat;
 
 const Compiler = interface.Compiler;
 const CompileOptions = interface.CompileOptions;
@@ -502,7 +503,7 @@ pub const Emscripten = struct {
     pub fn scanModuleDeps(self: *Self, allocator: Allocator, source_path: []const u8, _: CompileOptions) !ModuleDepsResult {
         _ = self;
 
-        const source = std.fs.cwd().readFileAlloc(allocator, source_path, 1024 * 1024 * 10) catch |err| {
+        const source = compat.readFileAlloc(allocator, source_path, 1024 * 1024 * 10) catch |err| {
             return .{
                 .success = false,
                 .dependencies = &.{},
@@ -588,7 +589,7 @@ fn findEmscripten(allocator: Allocator) !struct {
 } {
     // Check EMSDK environment variable
     var emsdk_path: ?[]const u8 = null;
-    if (std.posix.getenv("EMSDK")) |emsdk| {
+    if (compat.getenv("EMSDK")) |emsdk| {
         emsdk_path = try allocator.dupe(u8, emsdk);
 
         // Try to find emcc in EMSDK
@@ -602,7 +603,7 @@ fn findEmscripten(allocator: Allocator) !struct {
             const emcc_path = try std.fs.path.join(allocator, &.{ emsdk, candidate });
             defer allocator.free(emcc_path);
 
-            if (std.fs.cwd().access(emcc_path, .{})) |_| {
+            if (compat.exists(emcc_path)) {
                 const dir = std.fs.path.dirname(emcc_path) orelse ".";
                 const emxx_path = try std.fs.path.join(allocator, &.{ dir, "em++" });
 
@@ -618,7 +619,7 @@ fn findEmscripten(allocator: Allocator) !struct {
     // Check PATH
     const names = [_][]const u8{"emcc"};
 
-    if (std.posix.getenv("PATH")) |path_env| {
+    if (compat.getenv("PATH")) |path_env| {
         const sep = if (@import("builtin").os.tag == .windows) ';' else ':';
         var paths = std.mem.splitScalar(u8, path_env, sep);
         while (paths.next()) |dir| {
@@ -626,7 +627,7 @@ fn findEmscripten(allocator: Allocator) !struct {
                 const full_path = try std.fs.path.join(allocator, &.{ dir, name });
                 defer allocator.free(full_path);
 
-                if (std.fs.cwd().access(full_path, .{})) |_| {
+                if (compat.exists(full_path)) {
                     const emxx_path = try std.fs.path.join(allocator, &.{ dir, "em++" });
 
                     return .{

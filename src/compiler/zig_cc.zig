@@ -7,6 +7,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const interface = @import("interface.zig");
 const modules = @import("modules.zig");
+const compat = @import("util").compat;
 
 const Compiler = interface.Compiler;
 const CompileOptions = interface.CompileOptions;
@@ -390,7 +391,7 @@ pub const ZigCC = struct {
     /// Scan module dependencies
     pub fn scanModuleDeps(self: *Self, allocator: Allocator, source_path: []const u8, options: CompileOptions) !ModuleDepsResult {
         // Read source file and scan for module declarations
-        const source = std.fs.cwd().readFileAlloc(allocator, source_path, 1024 * 1024 * 10) catch |err| {
+        const source = compat.readFileAlloc(allocator, source_path, 1024 * 1024 * 10) catch |err| {
             return .{
                 .success = false,
                 .dependencies = &.{},
@@ -546,18 +547,18 @@ pub const ZigCC = struct {
 /// Find Zig executable path
 fn findZigPath(allocator: Allocator) ![]const u8 {
     // Check ZIG_PATH environment variable
-    if (std.posix.getenv("ZIG_PATH")) |path| {
+    if (compat.getenv("ZIG_PATH")) |path| {
         return allocator.dupe(u8, path);
     }
 
     // Check PATH
-    if (std.posix.getenv("PATH")) |path_env| {
+    if (compat.getenv("PATH")) |path_env| {
         var paths = std.mem.splitScalar(u8, path_env, ':');
         while (paths.next()) |dir| {
             const zig_path = try std.fs.path.join(allocator, &.{ dir, "zig" });
             defer allocator.free(zig_path);
 
-            if (std.fs.cwd().access(zig_path, .{})) |_| {
+            if (compat.exists(zig_path)) {
                 return allocator.dupe(u8, zig_path);
             } else |_| {}
         }

@@ -10,6 +10,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const compat = @import("util").compat;
 
 /// Scan options
 pub const ScanOptions = struct {
@@ -386,7 +387,7 @@ fn shouldExclude(name: []const u8, options: ScanOptions) bool {
 }
 
 fn extractIncludes(allocator: Allocator, file: *ScannedFile) !void {
-    const content = std.fs.cwd().readFileAlloc(allocator, file.path, 10 * 1024 * 1024) catch return;
+    const content = compat.readFileAlloc(allocator, file.path, 10 * 1024 * 1024) catch return;
     defer allocator.free(content);
 
     var lines = std.mem.splitScalar(u8, content, '\n');

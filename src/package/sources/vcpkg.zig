@@ -7,6 +7,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const fs = std.fs;
 const json = std.json;
+const compat = @import("util").compat;
 
 /// vcpkg-specific errors.
 pub const VcpkgError = error{
@@ -186,13 +187,13 @@ pub const VcpkgSource = struct {
         if (self.vcpkg_root) |r| return r;
 
         // Check VCPKG_ROOT environment variable
-        if (std.posix.getenv("VCPKG_ROOT")) |root| {
+        if (compat.getenv("VCPKG_ROOT")) |root| {
             self.vcpkg_root = self.allocator.dupe(u8, root) catch return error.OutOfMemory;
             return self.vcpkg_root.?;
         }
 
         // Check common locations
-        const home = std.posix.getenv("HOME") orelse std.posix.getenv("USERPROFILE") orelse
+        const home = compat.getenv("HOME") orelse compat.getenv("USERPROFILE") orelse
             return error.VcpkgNotFound;
 
         const search_paths = [_][]const u8{

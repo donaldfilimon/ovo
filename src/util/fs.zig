@@ -6,6 +6,7 @@ const Allocator = std.mem.Allocator;
 const fs = std.fs;
 const Dir = fs.Dir;
 const File = fs.File;
+const compat = @import("compat.zig");
 
 /// Error types for file system operations.
 pub const FsError = error{
@@ -216,7 +217,7 @@ pub fn fileSize(path: []const u8) !u64 {
 
 /// Read entire file contents.
 pub fn readFile(allocator: Allocator, path: []const u8) ![]u8 {
-    return fs.cwd().readFileAlloc(allocator, path, std.math.maxInt(usize));
+    return compat.readFileAlloc(allocator, path, std.math.maxInt(usize));
 }
 
 /// Write data to a file, creating parent directories if needed.

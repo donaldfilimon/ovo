@@ -31,6 +31,8 @@ fn printHelp(writer: *TermWriter) !void {
     try writer.dim("    ovo doc -o html/         # Output to html/\n", .{});
 }
 
+const findInPath = commands.findInPathC;
+
 /// Execute the doc command
 pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
     if (commands.hasHelpFlag(args)) {
@@ -49,8 +51,23 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
         return 1;
     }
 
-    try ctx.stdout.bold("Documentation", .{});
-    try ctx.stdout.print(" generation: coming soon\n", .{});
-    try ctx.stdout.dim("  Run doxygen or clang-doc manually for now.\n", .{});
-    return 0;
+    if (findInPath("doxygen")) {
+        try ctx.stdout.success("Found doxygen", .{});
+        try ctx.stdout.print(" in PATH.\n", .{});
+        try ctx.stdout.dim("  Run 'doxygen -g' to generate a Doxyfile, then 'doxygen' to build docs.\n", .{});
+        return 0;
+    }
+
+    if (findInPath("clang-doc")) {
+        try ctx.stdout.success("Found clang-doc", .{});
+        try ctx.stdout.print(" in PATH.\n", .{});
+        try ctx.stdout.dim("  Run 'clang-doc --format=html src/' to generate documentation.\n", .{});
+        return 0;
+    }
+
+    try ctx.stderr.warn("No documentation generator found.\n", .{});
+    try ctx.stderr.print("  Install one of the following to use 'ovo doc':\n", .{});
+    try ctx.stderr.print("    - doxygen   (https://www.doxygen.nl)\n", .{});
+    try ctx.stderr.print("    - clang-doc (part of LLVM/Clang tools)\n", .{});
+    return 1;
 }

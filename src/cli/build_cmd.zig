@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const commands = @import("commands.zig");
+const manifest = @import("manifest.zig");
 
 // Module imports
 const zon = @import("zon");
@@ -225,13 +226,7 @@ fn walkAndMatch(
     return results.toOwnedSlice(allocator);
 }
 
-fn fileExists(path: []const u8) bool {
-    var path_buf: [4096]u8 = undefined;
-    if (path.len >= path_buf.len) return false;
-    @memcpy(path_buf[0..path.len], path);
-    path_buf[path.len] = 0;
-    return std.c.access(@ptrCast(&path_buf), std.c.F_OK) == 0;
-}
+const fileExists = commands.fileExistsC;
 
 
 /// Convert project target to build engine target
@@ -326,13 +321,13 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
 
     // Check for build.zon
     const manifest_exists = blk: {
-        ctx.cwd.access("build.zon", .{}) catch break :blk false;
+        ctx.cwd.access(manifest.manifest_filename, .{}) catch break :blk false;
         break :blk true;
     };
 
     if (!manifest_exists) {
         try ctx.stderr.err("error: ", .{});
-        try ctx.stderr.print("no build.zon found in current directory\n", .{});
+        try ctx.stderr.print("no {s} found in current directory\n", .{manifest.manifest_filename});
         try ctx.stderr.dim("Run 'ovo init' to create a new project or 'ovo new <name>' to scaffold one.\n", .{});
         return 1;
     }
@@ -340,11 +335,11 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
     // Parse build.zon
     try ctx.stdout.print("  ", .{});
     try ctx.stdout.success("*", .{});
-    try ctx.stdout.print(" Parsing build.zon...\n", .{});
+    try ctx.stdout.print(" Parsing {s}...\n", .{manifest.manifest_filename});
 
-    var project = zon_parser.parseFile(ctx.allocator, "build.zon") catch |err| {
+    var project = zon_parser.parseFile(ctx.allocator, manifest.manifest_filename) catch |err| {
         try ctx.stderr.err("error: ", .{});
-        try ctx.stderr.print("failed to parse build.zon: {}\n", .{err});
+        try ctx.stderr.print("failed to parse {s}: {}\n", .{ manifest.manifest_filename, err });
         return 1;
     };
     defer project.deinit(ctx.allocator);

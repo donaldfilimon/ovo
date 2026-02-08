@@ -5,10 +5,12 @@
 
 const std = @import("std");
 const commands = @import("commands.zig");
+const manifest = @import("manifest.zig");
+const zon = @import("zon");
+const zon_parser = zon.parser;
 
 const Context = commands.Context;
 const TermWriter = commands.TermWriter;
-const Color = commands.Color;
 
 /// Print help for test command
 fn printHelp(writer: *TermWriter) !void {
@@ -86,34 +88,63 @@ pub fn execute(ctx: *Context, args: []const []const u8) !u8 {
 
     // Check for build.zon
     const manifest_exists = blk: {
-        ctx.cwd.access("build.zon", .{}) catch break :blk false;
+        ctx.cwd.access(manifest.manifest_filename, .{}) catch break :blk false;
         break :blk true;
     };
 
     if (!manifest_exists) {
         try ctx.stderr.err("error: ", .{});
-        try ctx.stderr.print("no build.zon found in current directory\n", .{});
+        try ctx.stderr.print("no {s} found in current directory\n", .{manifest.manifest_filename});
         return 1;
     }
 
-    // Simulated test discovery
-    const tests = [_][]const u8{
-        "unit_math_add",
-        "unit_math_multiply",
-        "unit_string_concat",
-        "unit_string_split",
-        "integration_api_get",
-        "integration_api_post",
-        "benchmark_sort",
+    // Parse build.zon to discover test targets
+    var project = zon_parser.parseFile(ctx.allocator, manifest.manifest_filename) catch |err| {
+        try ctx.stderr.err("error: ", .{});
+        try ctx.stderr.print("failed to parse {s}: {}\n", .{ manifest.manifest_filename, err });
+        return 1;
     };
+    defer project.deinit(ctx.allocator);
+
+    // Collect test names from project.tests and test-like targets
+    var discovered_tests: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer discovered_tests.deinit(ctx.allocator);
+
+    // Add explicit test specs
+    if (project.tests) |test_specs| {
+        for (test_specs) |spec| {
+            try discovered_tests.append(ctx.allocator, spec.name);
+        }
+    }
+
+    // Add targets whose name contains "test" (heuristic for test targets)
+    for (project.targets) |target| {
+        if (std.mem.indexOf(u8, target.name, "test") != null) {
+            // Avoid duplicates if the name was already added from project.tests
+            var already_added = false;
+            for (discovered_tests.items) |existing| {
+                if (std.mem.eql(u8, existing, target.name)) {
+                    already_added = true;
+                    break;
+                }
+            }
+            if (!already_added) {
+                try discovered_tests.append(ctx.allocator, target.name);
+            }
+        }
+    }
+
+    if (discovered_tests.items.len == 0) {
+        try ctx.stdout.warn("No test targets found in build.zon\n", .{});
+        return 0;
+    }
 
     // Filter tests by pattern
     var filtered_tests: std.ArrayListUnmanaged([]const u8) = .empty;
     defer filtered_tests.deinit(ctx.allocator);
 
-    for (tests) |test_name| {
+    for (discovered_tests.items) |test_name| {
         if (pattern) |p| {
-            // Simple glob matching (just prefix matching for demo)
             if (std.mem.startsWith(u8, test_name, p) or
                 std.mem.indexOf(u8, test_name, p) != null)
             {

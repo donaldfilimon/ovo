@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const compat = @import("compat.zig");
 
 /// ANSI color codes.
 pub const Color = enum {
@@ -188,19 +189,19 @@ pub const Terminal = struct {
 /// Check if terminal supports colors.
 fn supportsColor() bool {
     // Check NO_COLOR environment variable
-    if (std.posix.getenv("NO_COLOR")) |_| {
+    if (compat.getenv("NO_COLOR")) |_| {
         return false;
     }
 
     // Check TERM
-    if (std.posix.getenv("TERM")) |term| {
+    if (compat.getenv("TERM")) |term| {
         if (std.mem.eql(u8, term, "dumb")) {
             return false;
         }
     }
 
     // Check COLORTERM
-    if (std.posix.getenv("COLORTERM")) |_| {
+    if (compat.getenv("COLORTERM")) |_| {
         return true;
     }
 

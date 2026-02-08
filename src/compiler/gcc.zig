@@ -7,6 +7,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const interface = @import("interface.zig");
 const modules = @import("modules.zig");
+const compat = @import("util").compat;
 
 const Compiler = interface.Compiler;
 const CompileOptions = interface.CompileOptions;
@@ -511,14 +512,14 @@ pub const GCC = struct {
         allocator.free(result.stdout);
 
         // Read and parse dependency file
-        const dep_content = std.fs.cwd().readFileAlloc(allocator, dep_file, 1024 * 1024) catch {
+        const dep_content = compat.readFileAlloc(allocator, dep_file, 1024 * 1024) catch {
             allocator.free(result.stderr);
             return self.scanFromSource(allocator, source_path);
         };
         defer allocator.free(dep_content);
 
         // Delete temp file
-        std.fs.cwd().deleteFile(dep_file) catch {};
+        compat.unlink(dep_file) catch {};
 
         // Parse P1689 format (simplified)
         const parsed = try parseP1689(allocator, dep_content);
@@ -536,7 +537,7 @@ pub const GCC = struct {
     fn scanFromSource(self: *Self, allocator: Allocator, source_path: []const u8) !ModuleDepsResult {
         _ = self;
 
-        const source = std.fs.cwd().readFileAlloc(allocator, source_path, 1024 * 1024 * 10) catch |err| {
+        const source = compat.readFileAlloc(allocator, source_path, 1024 * 1024 * 10) catch |err| {
             return .{
                 .success = false,
                 .dependencies = &.{},
@@ -673,14 +674,14 @@ pub const GCC = struct {
 fn findGCC(allocator: Allocator) ![]const u8 {
     const names = [_][]const u8{ "gcc-14", "gcc-13", "gcc-12", "gcc-11", "gcc" };
 
-    if (std.posix.getenv("PATH")) |path_env| {
+    if (compat.getenv("PATH")) |path_env| {
         var paths = std.mem.splitScalar(u8, path_env, ':');
         while (paths.next()) |dir| {
             for (names) |name| {
                 const full_path = try std.fs.path.join(allocator, &.{ dir, name });
                 defer allocator.free(full_path);
 
-                if (std.fs.cwd().access(full_path, .{})) |_| {
+                if (compat.exists(full_path)) {
                     return allocator.dupe(u8, full_path);
                 } else |_| {}
             }
@@ -694,14 +695,14 @@ fn findGCC(allocator: Allocator) ![]const u8 {
 fn findGxx(allocator: Allocator) ![]const u8 {
     const names = [_][]const u8{ "g++-14", "g++-13", "g++-12", "g++-11", "g++" };
 
-    if (std.posix.getenv("PATH")) |path_env| {
+    if (compat.getenv("PATH")) |path_env| {
         var paths = std.mem.splitScalar(u8, path_env, ':');
         while (paths.next()) |dir| {
             for (names) |name| {
                 const full_path = try std.fs.path.join(allocator, &.{ dir, name });
                 defer allocator.free(full_path);
 
-                if (std.fs.cwd().access(full_path, .{})) |_| {
+                if (compat.exists(full_path)) {
                     return allocator.dupe(u8, full_path);
                 } else |_| {}
             }
