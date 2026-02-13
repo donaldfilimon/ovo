@@ -1,0 +1,9 @@
+.DS_Store
+
+# Zig build artifacts
+.zig-cache/
+zig-cache/
+zig-out/
+
+# OVO local artifacts
+.ovo/

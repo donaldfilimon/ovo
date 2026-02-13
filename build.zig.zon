@@ -1,0 +1,16 @@
+.{
+    .name = .ovo,
+    .version = "0.1.0-dev",
+    .fingerprint = 0x18a2f7b6f5aa1ad8,
+    .minimum_zig_version = "0.16.0-dev.2535+b5bd49460",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "README.md",
+        ".zigversion",
+        "docs",
+        "src",
+        "tests",
+    },
+}
