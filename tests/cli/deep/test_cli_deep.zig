@@ -22,6 +22,7 @@ test "unknown command returns non-zero" {
         .allocator = std.testing.allocator,
         .cwd_path = ".",
         .quiet = true,
+        .suppress_stderr = true,
     };
     const exit_code = try dispatch.dispatch(&ctx, &parsed);
     try std.testing.expectEqual(@as(u8, 1), exit_code);
@@ -38,6 +39,7 @@ test "command help can be requested at command level" {
         .allocator = std.testing.allocator,
         .cwd_path = ".",
         .quiet = true,
+        .suppress_stderr = true,
     };
     const exit_code = try dispatch.dispatch(&ctx, &parsed);
     try std.testing.expectEqual(@as(u8, 0), exit_code);
