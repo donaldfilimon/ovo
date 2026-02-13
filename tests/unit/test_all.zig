@@ -15,19 +15,27 @@ test "registry contains full command surface" {
 }
 
 test "zon parser requires name and version" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
     const good = ".{ .name = \"demo\", .version = \"1.0.0\", .license = \"MIT\" }";
-    const parsed = try parser.parseBuildZon(std.testing.allocator, good);
+    const parsed = try parser.parseBuildZon(alloc, good);
     try std.testing.expectEqualStrings("demo", parsed.name);
     try std.testing.expectEqualStrings("1.0.0", parsed.version);
 
     const missing_version = ".{ .name = \"demo\" }";
     try std.testing.expectError(
         error.MissingVersion,
-        parser.parseBuildZon(std.testing.allocator, missing_version),
+        parser.parseBuildZon(alloc, missing_version),
     );
 }
 
 test "zon parser captures targets and dependencies" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
     const fixture =
         \\.{
         \\    .ovo_schema = "0",
@@ -58,7 +66,7 @@ test "zon parser captures targets and dependencies" {
         \\}
     ;
 
-    const parsed = try parser.parseBuildZon(std.testing.allocator, fixture);
+    const parsed = try parser.parseBuildZon(alloc, fixture);
     try std.testing.expectEqual(@as(usize, 2), parsed.targets.len);
     try std.testing.expectEqualStrings("demo", parsed.targets[0].name);
     try std.testing.expectEqual(@as(usize, 2), parsed.dependencies.len);
