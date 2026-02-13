@@ -129,7 +129,7 @@ pub const PackageManager = struct {
     }
 };
 
-fn sortedUniqueDependencies(
+pub fn sortedUniqueDependencies(
     allocator: std.mem.Allocator,
     deps_input: []const project_mod.Dependency,
 ) ![]project_mod.Dependency {
@@ -154,7 +154,7 @@ fn sortedUniqueDependencies(
     return try unique.toOwnedSlice(allocator);
 }
 
-fn insertionSortDependencies(items: []project_mod.Dependency) void {
+pub fn insertionSortDependencies(items: []project_mod.Dependency) void {
     var i: usize = 1;
     while (i < items.len) : (i += 1) {
         const key = items[i];

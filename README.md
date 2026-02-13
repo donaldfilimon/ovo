@@ -66,6 +66,16 @@ zig build test-all
 - `ovo import <format> [path]`
 - `ovo export <format> [output_path]`
 
+### CMake Import Compatibility
+
+- `ovo import cmake <path>` parses:
+  - `project`, `set`, `add_executable`, `add_library`
+  - `add_subdirectory` recursively
+  - `include` and `.cmake` include files
+  - `${VAR}` variable expansion and embedded expansions
+  - semicolon-separated source/include list values
+  - visited path guards to avoid duplicate recursive imports
+
 ## Architecture
 
 - `src/core/` shared domain model
@@ -76,6 +86,12 @@ zig build test-all
 - `src/translate/` import/export format adapters
 - `src/cli/` CLI parser, registry, help, dispatch, and handlers
 - `src/neural/` legacy neural utilities
+
+## Translation Notes
+
+- Import defaults to `src/main.cpp` when no targets are detected.
+- Includes are merged from project-level and target-level include directives.
+- Declared C++ standards from supported commands are mapped to `defaults.cpp_standard`.
 
 ## Documentation
 

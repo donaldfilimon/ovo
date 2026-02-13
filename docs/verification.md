@@ -24,6 +24,12 @@ zig build test-cli-help-matrix
 zig build test-all
 ```
 
+Recent translator-focused verification:
+
+- `zig build test` (includes CMake importer coverage in `test_all`)
+- `zig build test-cli-help-matrix` (command-level import help paths)
+- `zig build test-all` (umbrella gate)
+
 ## Notes
 
 - Smoke focuses on API hygiene and command wiring.

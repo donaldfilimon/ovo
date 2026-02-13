@@ -11,6 +11,7 @@
 
 - `test`:
   - Unit model/parsing/module checks
+- `test` also covers `src/translate/import.zig` tests (format parsing, variable expansion, recursion/import compatibility).
 - `test-cli-smoke`:
   - Registry + dispatch parity
   - Global flag parsing baseline

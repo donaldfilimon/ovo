@@ -19,6 +19,7 @@ pub fn run(allocator: std.mem.Allocator, process_args: std.process.Args) !u8 {
 
     var parsed = try args.parse(argv.items);
     if (parsed.cwd) |cwd| {
+        // std.Io.Threaded.chdir is the correct Zig 0.16 POSIX chdir API
         try std.Io.Threaded.chdir(cwd);
     }
 
