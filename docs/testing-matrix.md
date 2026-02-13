@@ -23,3 +23,7 @@
   - `--help` flow validation for every command
 - `test-cli-all`:
   - Runs smoke + deep + stress + integration as one aggregate step
+- `test-cli-help-matrix`:
+  - Runs global `--help` plus command-level `--help` for all commands in `command_registry`
+- `test-all`:
+  - Runs compile check, unit tests, CLI aggregate tiers, and help matrix as a single gate

@@ -7,6 +7,75 @@ const help = @import("help.zig");
 const handlers = @import("handlers.zig");
 const version = @import("../version.zig");
 
+const CommandId = enum {
+    new_cmd,
+    init,
+    build,
+    run,
+    test_cmd,
+    clean,
+    install,
+    add,
+    remove,
+    fetch,
+    update,
+    lock,
+    deps,
+    doc,
+    doctor,
+    fmt,
+    lint,
+    info,
+    import_cmd,
+    export_cmd,
+};
+
+const CommandHandler = struct {
+    name: []const u8,
+    id: CommandId,
+};
+
+const command_handlers = [_]CommandHandler{
+    .{ .name = "new", .id = .new_cmd },
+    .{ .name = "init", .id = .init },
+    .{ .name = "build", .id = .build },
+    .{ .name = "run", .id = .run },
+    .{ .name = "test", .id = .test_cmd },
+    .{ .name = "clean", .id = .clean },
+    .{ .name = "install", .id = .install },
+    .{ .name = "add", .id = .add },
+    .{ .name = "remove", .id = .remove },
+    .{ .name = "fetch", .id = .fetch },
+    .{ .name = "update", .id = .update },
+    .{ .name = "lock", .id = .lock },
+    .{ .name = "deps", .id = .deps },
+    .{ .name = "doc", .id = .doc },
+    .{ .name = "doctor", .id = .doctor },
+    .{ .name = "fmt", .id = .fmt },
+    .{ .name = "lint", .id = .lint },
+    .{ .name = "info", .id = .info },
+    .{ .name = "import", .id = .import_cmd },
+    .{ .name = "export", .id = .export_cmd },
+};
+
+comptime {
+    if (command_handlers.len != registry.commands.len) {
+        @compileError("command dispatch table must match registry command count");
+    }
+    for (registry.commands) |spec| {
+        var found = false;
+        for (command_handlers) |entry| {
+            if (std.mem.eql(u8, spec.name, entry.name)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            @compileError("command registry entry missing dispatch handler: " ++ spec.name);
+        }
+    }
+}
+
 pub fn dispatch(ctx: *Context, parsed: *const ParsedArgs) !u8 {
     if (parsed.show_version) {
         try ctx.print("ovo {s}\n", .{version.string});
@@ -93,26 +162,7 @@ fn editDistanceCap16(a: []const u8, b: []const u8) usize {
 }
 
 pub fn hasHandler(command: []const u8) bool {
-    return std.mem.eql(u8, command, "new") or
-        std.mem.eql(u8, command, "init") or
-        std.mem.eql(u8, command, "build") or
-        std.mem.eql(u8, command, "run") or
-        std.mem.eql(u8, command, "test") or
-        std.mem.eql(u8, command, "clean") or
-        std.mem.eql(u8, command, "install") or
-        std.mem.eql(u8, command, "add") or
-        std.mem.eql(u8, command, "remove") or
-        std.mem.eql(u8, command, "fetch") or
-        std.mem.eql(u8, command, "update") or
-        std.mem.eql(u8, command, "lock") or
-        std.mem.eql(u8, command, "deps") or
-        std.mem.eql(u8, command, "doc") or
-        std.mem.eql(u8, command, "doctor") or
-        std.mem.eql(u8, command, "fmt") or
-        std.mem.eql(u8, command, "lint") or
-        std.mem.eql(u8, command, "info") or
-        std.mem.eql(u8, command, "import") or
-        std.mem.eql(u8, command, "export");
+    return commandIdForName(command) != null;
 }
 
 fn dispatchCommand(
@@ -121,27 +171,38 @@ fn dispatchCommand(
     command_args: []const []const u8,
     passthrough_args: []const []const u8,
 ) !u8 {
-    if (std.mem.eql(u8, command, "new")) return handlers.handleNew(ctx, command_args);
-    if (std.mem.eql(u8, command, "init")) return handlers.handleInit(ctx, command_args);
-    if (std.mem.eql(u8, command, "build")) return handlers.handleBuild(ctx, command_args, passthrough_args);
-    if (std.mem.eql(u8, command, "run")) return handlers.handleRun(ctx, command_args, passthrough_args);
-    if (std.mem.eql(u8, command, "test")) return handlers.handleTest(ctx, command_args, passthrough_args);
-    if (std.mem.eql(u8, command, "clean")) return handlers.handleClean(ctx, command_args);
-    if (std.mem.eql(u8, command, "install")) return handlers.handleInstall(ctx, command_args);
-    if (std.mem.eql(u8, command, "add")) return handlers.handleAdd(ctx, command_args);
-    if (std.mem.eql(u8, command, "remove")) return handlers.handleRemove(ctx, command_args);
-    if (std.mem.eql(u8, command, "fetch")) return handlers.handleFetch(ctx, command_args);
-    if (std.mem.eql(u8, command, "update")) return handlers.handleUpdate(ctx, command_args);
-    if (std.mem.eql(u8, command, "lock")) return handlers.handleLock(ctx, command_args);
-    if (std.mem.eql(u8, command, "deps")) return handlers.handleDeps(ctx, command_args);
-    if (std.mem.eql(u8, command, "doc")) return handlers.handleDoc(ctx, command_args);
-    if (std.mem.eql(u8, command, "doctor")) return handlers.handleDoctor(ctx, command_args);
-    if (std.mem.eql(u8, command, "fmt")) return handlers.handleFmt(ctx, command_args);
-    if (std.mem.eql(u8, command, "lint")) return handlers.handleLint(ctx, command_args);
-    if (std.mem.eql(u8, command, "info")) return handlers.handleInfo(ctx, command_args);
-    if (std.mem.eql(u8, command, "import")) return handlers.handleImport(ctx, command_args);
-    if (std.mem.eql(u8, command, "export")) return handlers.handleExport(ctx, command_args);
+    const command_id = commandIdForName(command) orelse {
+        try ctx.printErr("error: unimplemented command '{s}'\n", .{command});
+        return 1;
+    };
 
-    try ctx.printErr("error: unimplemented command '{s}'\n", .{command});
-    return 1;
+    return switch (command_id) {
+        .new_cmd => handlers.handleNew(ctx, command_args),
+        .init => handlers.handleInit(ctx, command_args),
+        .build => handlers.handleBuild(ctx, command_args, passthrough_args),
+        .run => handlers.handleRun(ctx, command_args, passthrough_args),
+        .test_cmd => handlers.handleTest(ctx, command_args, passthrough_args),
+        .clean => handlers.handleClean(ctx, command_args),
+        .install => handlers.handleInstall(ctx, command_args),
+        .add => handlers.handleAdd(ctx, command_args),
+        .remove => handlers.handleRemove(ctx, command_args),
+        .fetch => handlers.handleFetch(ctx, command_args),
+        .update => handlers.handleUpdate(ctx, command_args),
+        .lock => handlers.handleLock(ctx, command_args),
+        .deps => handlers.handleDeps(ctx, command_args),
+        .doc => handlers.handleDoc(ctx, command_args),
+        .doctor => handlers.handleDoctor(ctx, command_args),
+        .fmt => handlers.handleFmt(ctx, command_args),
+        .lint => handlers.handleLint(ctx, command_args),
+        .info => handlers.handleInfo(ctx, command_args),
+        .import_cmd => handlers.handleImport(ctx, command_args),
+        .export_cmd => handlers.handleExport(ctx, command_args),
+    };
+}
+
+fn commandIdForName(name: []const u8) ?CommandId {
+    for (command_handlers) |entry| {
+        if (std.mem.eql(u8, name, entry.name)) return entry.id;
+    }
+    return null;
 }

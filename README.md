@@ -28,6 +28,8 @@ zig build test-cli-deep
 zig build test-cli-stress
 zig build test-cli-integration
 zig build test-cli-all
+zig build test-cli-help-matrix
+zig build test-all
 ```
 
 ## Command Surface

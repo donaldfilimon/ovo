@@ -45,10 +45,28 @@ pub fn deleteFileIfExists(path: []const u8) !void {
     };
 }
 
-pub fn copyFile(source_path: []const u8, destination_path: []const u8) !void {
-    try std.Io.Dir.copyFileAbsolute(source_path, destination_path, runtime.io(), .{});
+pub fn copyFile(
+    allocator: std.mem.Allocator,
+    source_path: []const u8,
+    destination_path: []const u8,
+) !void {
+    const cwd = try currentPathAlloc(allocator);
+    defer allocator.free(cwd);
+
+    const source_abs = try absolutePathAlloc(allocator, cwd, source_path);
+    defer allocator.free(source_abs);
+
+    const destination_abs = try absolutePathAlloc(allocator, cwd, destination_path);
+    defer allocator.free(destination_abs);
+
+    try std.Io.Dir.copyFileAbsolute(source_abs, destination_abs, runtime.io(), .{});
 }
 
 pub fn currentPathAlloc(allocator: std.mem.Allocator) ![]u8 {
     return std.process.currentPathAlloc(runtime.io(), allocator);
+}
+
+fn absolutePathAlloc(allocator: std.mem.Allocator, cwd: []const u8, path: []const u8) ![]u8 {
+    if (std.fs.path.isAbsolute(path)) return try allocator.dupe(u8, path);
+    return try std.fs.path.join(allocator, &.{ cwd, path });
 }

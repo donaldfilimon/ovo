@@ -20,6 +20,8 @@ zig build test-cli-deep
 zig build test-cli-stress
 zig build test-cli-integration
 zig build test-cli-all
+zig build test-cli-help-matrix
+zig build test-all
 ```
 
 ## Notes
@@ -28,3 +30,5 @@ zig build test-cli-all
 - Deep adds option contract and failure-path checks.
 - Stress covers repeatability and repeated execution behavior.
 - Integration exercises command flows via CLI parser + dispatcher.
+- Help matrix validates `ovo --help` and per-command `--help` across the registry.
+- `test-all` is the umbrella verification step (`check` + unit + CLI tiers + help matrix).
