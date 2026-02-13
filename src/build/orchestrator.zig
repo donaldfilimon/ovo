@@ -468,7 +468,7 @@ pub fn resolveSourcePattern(allocator: std.mem.Allocator, pattern: []const u8) !
         while (try walker.next(core.runtime.io())) |entry| {
             if (entry.kind != .file) continue;
             if (ext.len > 0 and !std.mem.eql(u8, std.fs.path.extension(entry.path), ext)) continue;
-            try files.append(allocator, try std.fmt.allocPrint(allocator, "{s}/{s}", .{ base_dir, entry.path }));
+            try files.append(allocator, try resolvePatternPath(allocator, base_dir, entry.path));
         }
     } else {
         var dir = try std.Io.Dir.cwd().openDir(core.runtime.io(), base_dir, .{ .iterate = true });
@@ -484,6 +484,22 @@ pub fn resolveSourcePattern(allocator: std.mem.Allocator, pattern: []const u8) !
 
     if (files.items.len == 0) return error.NoSources;
     return try files.toOwnedSlice(allocator);
+}
+
+fn resolvePatternPath(allocator: std.mem.Allocator, base_dir: []const u8, entry_path: []const u8) ![]u8 {
+    if (std.fs.path.isAbsolute(entry_path)) return try allocator.dupe(u8, entry_path);
+    if (hasBasePrefix(entry_path, base_dir)) return try allocator.dupe(u8, entry_path);
+    return try std.fs.path.join(allocator, &.{ base_dir, entry_path });
+}
+
+fn hasBasePrefix(path: []const u8, base_dir: []const u8) bool {
+    if (!std.mem.startsWith(u8, path, base_dir)) return false;
+    if (path.len == base_dir.len) return true;
+    return base_dir.len < path.len and isPathSeparator(path[base_dir.len]);
+}
+
+fn isPathSeparator(char: u8) bool {
+    return char == '/' or char == '\\';
 }
 
 fn trimTrailingSlashes(value: []const u8) []const u8 {

@@ -93,12 +93,19 @@ pub fn handleClean(ctx: *Context, _: []const []const u8) !u8 {
     return 0;
 }
 
+fn absolutePathAlloc(allocator: std.mem.Allocator, cwd: []const u8, path: []const u8) ![]u8 {
+    if (std.fs.path.isAbsolute(path)) return try allocator.dupe(u8, path);
+    return try std.fs.path.join(allocator, &.{ cwd, path });
+}
+
 pub fn handleInstall(ctx: *Context, _: []const []const u8) !u8 {
     const result = try build.orchestrator.buildProject(ctx.allocator, .{
         .optimize_override = ctx.profile,
     });
     try core.fs.ensureDir(".ovo/install/bin");
     try core.fs.ensureDir(".ovo/install/lib");
+    const cwd = try core.fs.currentPathAlloc(ctx.allocator);
+    defer ctx.allocator.free(cwd);
 
     for (result.artifacts) |artifact| {
         const file_name = std.fs.path.basename(artifact.path);
@@ -106,7 +113,15 @@ pub fn handleInstall(ctx: *Context, _: []const []const u8) !u8 {
             .executable, .test_target => try std.fmt.allocPrint(ctx.allocator, ".ovo/install/bin/{s}", .{file_name}),
             .library_static, .library_shared => try std.fmt.allocPrint(ctx.allocator, ".ovo/install/lib/{s}", .{file_name}),
         };
-        try core.fs.copyFile(artifact.path, install_path);
+        defer ctx.allocator.free(install_path);
+
+        const source_abs = try absolutePathAlloc(ctx.allocator, cwd, artifact.path);
+        defer ctx.allocator.free(source_abs);
+
+        const destination_abs = try absolutePathAlloc(ctx.allocator, cwd, install_path);
+        defer ctx.allocator.free(destination_abs);
+
+        try core.fs.copyFile(source_abs, destination_abs);
         try ctx.print("install: {s}\n", .{install_path});
     }
     return 0;

@@ -53,7 +53,7 @@ pub fn build(b: *std.Build) void {
     const check_step = b.step("check", "Compile OVO without running tests");
     check_step.dependOn(&exe.step);
 
-    _ = addTestStep(
+    const unit = addTestStep(
         b,
         "test",
         "Run unit tests",
@@ -121,6 +121,7 @@ pub fn build(b: *std.Build) void {
 
     const test_all = b.step("test-all", "Run all verification steps");
     test_all.dependOn(check_step);
+    test_all.dependOn(unit);
     test_all.dependOn(cli_all);
     test_all.dependOn(help_matrix);
 }
