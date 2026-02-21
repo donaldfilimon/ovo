@@ -6,7 +6,6 @@ pub const cli_registry = @import("cli/command_registry.zig");
 
 pub const zon_parser = @import("zon/parser.zig");
 pub const zon_writer = @import("zon/writer.zig");
-pub const neural = @import("neural/mod.zig");
 pub const compiler = @import("compiler/mod.zig");
 pub const build_orchestrator = @import("build/orchestrator.zig");
 pub const core_project = @import("core/project.zig");

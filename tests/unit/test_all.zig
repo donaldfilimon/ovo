@@ -4,7 +4,6 @@ const registry = ovo.cli_registry;
 const dispatch = ovo.cli_dispatch;
 const parser = ovo.zon_parser;
 const writer = ovo.zon_writer;
-const neural = ovo.neural;
 const compiler = ovo.compiler;
 const orchestrator = ovo.build_orchestrator;
 const project_mod = ovo.core_project;
@@ -253,20 +252,6 @@ test "renderBuildZon round-trips through parser" {
     try std.testing.expectEqual(@as(usize, 1), parsed.dependencies.len);
     try std.testing.expectEqualStrings("fmt", parsed.dependencies[0].name);
     try std.testing.expectEqualStrings("10.2.1", parsed.dependencies[0].version);
-}
-
-// ── Neural ──────────────────────────────────────────────────────────
-
-test "neural layer and loss are deterministic" {
-    var layer = neural.layers.DenseLayer{ .weight = 1.5, .bias = 0.5 };
-    const output = layer.apply(2.0);
-    try std.testing.expectApproxEqAbs(@as(f32, 3.5), output, 0.0001);
-
-    const relu_neg = neural.activation.relu(-4.0);
-    try std.testing.expectEqual(@as(f32, 0.0), relu_neg);
-
-    const mse = neural.loss.meanSquaredError(output, 1.0);
-    try std.testing.expect(mse > 0.0);
 }
 
 // ── Compiler Backend ────────────────────────────────────────────────

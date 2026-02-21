@@ -84,6 +84,7 @@ pub fn handleBuild(ctx: *Context, command_args: []const []const u8, _: []const [
         .optimize_override = ctx.profile,
         .force = force,
         .jobs = jobs,
+        .quiet = ctx.quiet,
     });
     try ctx.print("build: project={s}\n", .{result.project_name});
     for (result.artifacts) |artifact| {

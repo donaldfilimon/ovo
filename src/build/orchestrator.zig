@@ -12,6 +12,7 @@ pub const BuildOptions = struct {
     test_only: bool = false,
     force: bool = false,
     jobs: u32 = 0,
+    quiet: bool = false,
 };
 
 pub const BuiltArtifact = struct {
@@ -31,6 +32,7 @@ pub fn loadProject(allocator: std.mem.Allocator) !project_mod.Project {
 }
 
 pub fn buildProject(allocator: std.mem.Allocator, options: BuildOptions) !BuildResult {
+    const build_start = nowNs();
     const project = try loadProject(allocator);
     try core.fs.ensureDir(project.defaults.output_dir);
 
@@ -40,6 +42,7 @@ pub fn buildProject(allocator: std.mem.Allocator, options: BuildOptions) !BuildR
     const optimize = options.optimize_override orelse project.defaults.optimize;
     const backend = options.backend_override orelse project.defaults.backend;
     const jobs = options.jobs;
+    const quiet = options.quiet;
 
     // Collect active (filtered) target indices
     var active_indices: std.ArrayList(usize) = .empty;
@@ -69,13 +72,14 @@ pub fn buildProject(allocator: std.mem.Allocator, options: BuildOptions) !BuildR
     }
 
     const job_limit = if (jobs == 0) detectJobCount() else jobs;
+    var total_compiled: usize = 0;
 
     for (waves) |wave| {
         if (wave.len == 1) {
             // Single target in wave — build directly (no threading overhead)
             const target_idx = wave[0];
             const target = project.targets[target_idx];
-            const artifact_path = try buildTarget(
+            const bt_result = try buildTarget(
                 allocator,
                 &project,
                 target,
@@ -84,10 +88,12 @@ pub fn buildProject(allocator: std.mem.Allocator, options: BuildOptions) !BuildR
                 options.force,
                 jobs,
             );
+            if (!quiet) printTargetProgress(target.name, bt_result);
+            total_compiled += bt_result.compile_timings.len;
             try artifacts.append(allocator, .{
                 .name = target.name,
                 .kind = target.kind,
-                .path = artifact_path,
+                .path = bt_result.artifact_path,
             });
         } else {
             // Multiple independent targets — build in parallel
@@ -157,6 +163,7 @@ pub fn buildProject(allocator: std.mem.Allocator, options: BuildOptions) !BuildR
                     if (first_err == null) first_err = error.OutOfMemory;
                     continue;
                 };
+                total_compiled += wave_results[wi].compiled_count;
                 artifacts.append(allocator, .{
                     .name = target.name,
                     .kind = target.kind,
@@ -174,10 +181,40 @@ pub fn buildProject(allocator: std.mem.Allocator, options: BuildOptions) !BuildR
 
     try writeCompileCommands(allocator, project);
 
+    // Print build summary
+    if (!quiet and total_compiled > 0) {
+        const total_ns = elapsedNs(build_start);
+        if (total_ns > 0) {
+            std.debug.print("Build complete: {d} file(s) compiled, {d} target(s), {d}.{d:0>2}s total\n", .{
+                total_compiled,
+                artifacts.items.len,
+                total_ns / std.time.ns_per_s,
+                (total_ns % std.time.ns_per_s) / (std.time.ns_per_s / 100),
+            });
+        }
+    }
+
     return .{
         .project_name = project.name,
         .artifacts = try artifacts.toOwnedSlice(allocator),
     };
+}
+
+fn printTargetProgress(target_name: []const u8, bt_result: BuildTargetResult) void {
+    for (bt_result.compile_timings) |timing| {
+        std.debug.print("Compiling {s} ... {d}.{d:0>2}s\n", .{
+            timing.source,
+            timing.elapsed_ns / std.time.ns_per_s,
+            (timing.elapsed_ns % std.time.ns_per_s) / (std.time.ns_per_s / 100),
+        });
+    }
+    if (bt_result.link_elapsed_ns > 0) {
+        std.debug.print("Linking {s} ... {d}.{d:0>2}s\n", .{
+            target_name,
+            bt_result.link_elapsed_ns / std.time.ns_per_s,
+            (bt_result.link_elapsed_ns % std.time.ns_per_s) / (std.time.ns_per_s / 100),
+        });
+    }
 }
 
 pub fn findRunnableArtifact(result: BuildResult, requested_name: ?[]const u8) ?BuiltArtifact {
@@ -231,6 +268,46 @@ fn writeCompileCommands(allocator: std.mem.Allocator, project: project_mod.Proje
     try core.fs.writeFile(path, out.items);
 }
 
+fn resolveDependencyIncludes(
+    allocator: std.mem.Allocator,
+    project: *const project_mod.Project,
+    target_includes: []const []const u8,
+) ![]const []const u8 {
+    if (project.dependencies.len == 0) return target_includes;
+
+    var merged: std.ArrayList([]const u8) = .empty;
+    errdefer merged.deinit(allocator);
+
+    // User-declared includes first (highest priority)
+    for (target_includes) |inc| try merged.append(allocator, inc);
+
+    // Scan fetched dependency cache dirs for include/ subdirs
+    for (project.dependencies) |dep| {
+        const dep_dir = try std.fmt.allocPrint(allocator, ".ovo/cache/{s}-{s}", .{ dep.name, dep.version });
+        const include_path = try std.fmt.allocPrint(allocator, "{s}/include", .{dep_dir});
+        if (core.fs.fileExists(include_path)) {
+            try merged.append(allocator, include_path);
+        }
+        // Some C libraries put headers alongside sources
+        const src_path = try std.fmt.allocPrint(allocator, "{s}/src", .{dep_dir});
+        if (core.fs.fileExists(src_path)) {
+            try merged.append(allocator, src_path);
+        }
+        // Also add the dep root itself (for flat-layout deps like stb)
+        if (core.fs.fileExists(dep_dir)) {
+            try merged.append(allocator, dep_dir);
+        }
+    }
+
+    return try merged.toOwnedSlice(allocator);
+}
+
+const BuildTargetResult = struct {
+    artifact_path: []const u8,
+    compile_timings: []const CompileTimingEntry,
+    link_elapsed_ns: u64,
+};
+
 fn buildTarget(
     allocator: std.mem.Allocator,
     project: *const project_mod.Project,
@@ -239,7 +316,7 @@ fn buildTarget(
     backend: []const u8,
     force: bool,
     jobs: u32,
-) ![]const u8 {
+) !BuildTargetResult {
     var resolved_sources_list: std.ArrayList([]const u8) = .empty;
     errdefer resolved_sources_list.deinit(allocator);
 
@@ -254,13 +331,17 @@ fn buildTarget(
     if (sources.len == 0) return error.NoSources;
 
     const output = try artifactPath(allocator, project.defaults.output_dir, target);
+    const include_dirs = try resolveDependencyIncludes(allocator, project, target.include_dirs);
+
+    var compile_timings: []const CompileTimingEntry = &.{};
+    var link_elapsed_ns: u64 = 0;
 
     switch (target.kind) {
         .executable, .test_target => {
-            try compileAndLinkExecutable(
+            const tr = try compileAndLinkExecutable(
                 allocator,
                 sources,
-                target.include_dirs,
+                include_dirs,
                 target.link_libraries,
                 optimize,
                 project.defaults.cpp_standard,
@@ -273,12 +354,14 @@ fn buildTarget(
                 force,
                 jobs,
             );
+            compile_timings = tr.compile_timings;
+            link_elapsed_ns = tr.link_elapsed_ns;
         },
         .library_shared => {
-            try compileSharedLibrary(
+            const tr = try compileSharedLibrary(
                 allocator,
                 sources,
-                target.include_dirs,
+                include_dirs,
                 target.link_libraries,
                 optimize,
                 project.defaults.cpp_standard,
@@ -291,12 +374,14 @@ fn buildTarget(
                 force,
                 jobs,
             );
+            compile_timings = tr.compile_timings;
+            link_elapsed_ns = tr.link_elapsed_ns;
         },
         .library_static => {
-            try compileStaticLibrary(
+            const tr = try compileStaticLibrary(
                 allocator,
                 sources,
-                target.include_dirs,
+                include_dirs,
                 optimize,
                 project.defaults.cpp_standard,
                 backend,
@@ -308,15 +393,22 @@ fn buildTarget(
                 force,
                 jobs,
             );
+            compile_timings = tr.compile_timings;
+            link_elapsed_ns = tr.link_elapsed_ns;
         },
     }
 
-    return output;
+    return .{
+        .artifact_path = output,
+        .compile_timings = compile_timings,
+        .link_elapsed_ns = link_elapsed_ns,
+    };
 }
 
 const TargetBuildResult = struct {
     artifact_path: []const u8 = "",
     err: ?anyerror = null,
+    compiled_count: usize = 0,
 };
 
 const TargetBuildJobArgs = struct {
@@ -340,7 +432,7 @@ fn targetBuildThread(args: *TargetBuildJobArgs) void {
     const alloc = thread_arena.allocator();
 
     const target = args.project.targets[args.target_idx];
-    const path = buildTarget(
+    const bt_result = buildTarget(
         alloc,
         args.project,
         target,
@@ -353,8 +445,10 @@ fn targetBuildThread(args: *TargetBuildJobArgs) void {
         return;
     };
 
+    args.result.compiled_count = bt_result.compile_timings.len;
+
     // Dupe artifact_path to shared GPA so it survives arena deinit
-    args.result.artifact_path = args.shared_gpa.dupe(u8, path) catch {
+    args.result.artifact_path = args.shared_gpa.dupe(u8, bt_result.artifact_path) catch {
         args.result.err = error.OutOfMemory;
         return;
     };
@@ -437,10 +531,63 @@ fn sourceToObjectPath(
     return std.fmt.allocPrint(allocator, "{s}/{s}{s}", .{ obj_dir, trimmed, ext });
 }
 
+fn removeStaleObjects(
+    allocator: std.mem.Allocator,
+    obj_dir: []const u8,
+    expected_objects: []const []const u8,
+    is_msvc: bool,
+) bool {
+    const obj_ext: []const u8 = if (is_msvc) ".obj" else ".o";
+    var dir = std.Io.Dir.cwd().openDir(core.runtime.io(), obj_dir, .{ .iterate = true }) catch return false;
+    defer dir.close(core.runtime.io());
+
+    var removed_any = false;
+    var it = dir.iterate();
+    while (it.next(core.runtime.io()) catch null) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.name, obj_ext)) continue;
+
+        const full_path = std.fmt.allocPrint(allocator, "{s}/{s}", .{ obj_dir, entry.name }) catch continue;
+
+        var is_expected = false;
+        for (expected_objects) |expected| {
+            if (std.mem.eql(u8, expected, full_path)) {
+                is_expected = true;
+                break;
+            }
+        }
+        if (!is_expected) {
+            core.fs.deleteFileIfExists(full_path) catch {};
+            removed_any = true;
+        }
+    }
+    return removed_any;
+}
+
+const CompileTimingEntry = struct {
+    source: []const u8,
+    elapsed_ns: u64,
+};
+
 const CompileResult = struct {
     objects: []const []const u8,
     any_dirty: bool,
+    timings: []const CompileTimingEntry = &.{},
 };
+
+fn nowNs() ?u64 {
+    const ts = std.Io.Clock.awake.now(core.runtime.io());
+    const ns = ts.nanoseconds;
+    if (ns <= 0) return null;
+    return @intCast(ns);
+}
+
+fn elapsedNs(start: ?u64) u64 {
+    const s = start orelse return 0;
+    const end = nowNs() orelse return 0;
+    if (end <= s) return 0;
+    return end - s;
+}
 
 fn detectJobCount() u32 {
     const n = std.Thread.getCpuCount() catch return 4;
@@ -451,6 +598,7 @@ const CompileJobResult = struct {
     failed: bool = false,
     stdout: ?[]u8 = null,
     stderr: ?[]u8 = null,
+    elapsed_ns: u64 = 0,
 };
 
 const CompileJobArgs = struct {
@@ -463,10 +611,12 @@ const CompileJobArgs = struct {
 fn compileJobThread(args: *CompileJobArgs) void {
     defer _ = args.active_count.fetchSub(1, .release);
 
+    const start = nowNs();
     const cap = core.exec.runCapture(args.gpa, args.argv) catch {
         args.result.failed = true;
         return;
     };
+    args.result.elapsed_ns = elapsedNs(start);
     args.result.stdout = cap.stdout;
     args.result.stderr = cap.stderr;
     args.result.failed = cap.code != 0;
@@ -530,8 +680,12 @@ fn compileSources(
         try all_argvs.append(allocator, try compile_argv.toOwnedSlice(allocator));
     }
 
+    // Remove stale .o/.obj files from previous builds (sources removed from build.zon)
+    const stale_removed = removeStaleObjects(allocator, obj_dir, objects.items, is_msvc);
+    if (stale_removed) any_dirty = true;
+
     const dirty_count = dirty_indices.items.len;
-    if (dirty_count == 0) {
+    if (dirty_count == 0 and !stale_removed) {
         return .{
             .objects = try objects.toOwnedSlice(allocator),
             .any_dirty = false,
@@ -540,18 +694,24 @@ fn compileSources(
 
     // Serial path: 1 job or 1 dirty source — skip threading overhead
     if (job_limit == 1 or dirty_count == 1) {
+        var timings: std.ArrayList(CompileTimingEntry) = .empty;
         var failed_count: usize = 0;
-        for (all_argvs.items) |argv| {
+        for (all_argvs.items, 0..) |argv, di| {
+            const start = nowNs();
             const code = core.exec.runInherit(allocator, argv) catch {
                 failed_count += 1;
                 continue;
             };
+            const elapsed_ns = elapsedNs(start);
+            const source_idx = dirty_indices.items[di];
+            try timings.append(allocator, .{ .source = sources[source_idx], .elapsed_ns = elapsed_ns });
             if (code != 0) failed_count += 1;
         }
         if (failed_count > 0) return error.CompileFailed;
         return .{
             .objects = try objects.toOwnedSlice(allocator),
             .any_dirty = true,
+            .timings = try timings.toOwnedSlice(allocator),
         };
     }
 
@@ -602,18 +762,23 @@ fn compileSources(
         if (maybe_thread) |thread| thread.join();
     }
 
-    // Phase 4: Print captured output atomically and count failures
+    // Phase 4: Print captured output atomically, collect timings, count failures
     var failed_count: usize = 0;
+    var timings: std.ArrayList(CompileTimingEntry) = .empty;
     for (results, 0..) |result, di| {
+        const source_idx = dirty_indices.items[di];
         if (result.stderr) |s| {
             if (s.len > 0) {
-                const source_idx = dirty_indices.items[di];
                 std.debug.print("--- {s} ---\n{s}", .{ sources[source_idx], s });
             }
         }
         if (result.stdout) |s| {
             if (s.len > 0) std.debug.print("{s}", .{s});
         }
+        timings.append(allocator, .{
+            .source = sources[source_idx],
+            .elapsed_ns = result.elapsed_ns,
+        }) catch {};
         if (result.failed) failed_count += 1;
     }
 
@@ -632,8 +797,14 @@ fn compileSources(
     return .{
         .objects = try objects.toOwnedSlice(allocator),
         .any_dirty = true,
+        .timings = timings.toOwnedSlice(allocator) catch &.{},
     };
 }
+
+const TimedBuildResult = struct {
+    compile_timings: []const CompileTimingEntry,
+    link_elapsed_ns: u64,
+};
 
 fn compileAndLinkExecutable(
     allocator: std.mem.Allocator,
@@ -650,12 +821,12 @@ fn compileAndLinkExecutable(
     cflags: []const []const u8,
     force: bool,
     jobs: u32,
-) !void {
+) !TimedBuildResult {
     const obj_dir = try std.fmt.allocPrint(allocator, "{s}/obj-{s}", .{ output_dir, target_name });
     const result = try compileSources(allocator, sources, include_dirs, optimize, standard, backend, obj_dir, defines, cflags, force, jobs);
 
     const needs_link = result.any_dirty or !core.fs.fileExists(output);
-    if (!needs_link) return;
+    if (!needs_link) return .{ .compile_timings = result.timings, .link_elapsed_ns = 0 };
 
     const is_msvc = std.mem.eql(u8, backend, "msvc");
     var argv: std.ArrayList([]const u8) = .empty;
@@ -670,8 +841,11 @@ fn compileAndLinkExecutable(
         try argv.append(allocator, output);
     }
 
+    const link_start = nowNs();
     const code = try core.exec.runInherit(allocator, argv.items);
+    const link_elapsed = elapsedNs(link_start);
     if (code != 0) return error.CompileFailed;
+    return .{ .compile_timings = result.timings, .link_elapsed_ns = link_elapsed };
 }
 
 fn compileSharedLibrary(
@@ -689,7 +863,7 @@ fn compileSharedLibrary(
     cflags: []const []const u8,
     force: bool,
     jobs: u32,
-) !void {
+) !TimedBuildResult {
     const is_msvc = std.mem.eql(u8, backend, "msvc");
     const obj_dir = try std.fmt.allocPrint(allocator, "{s}/obj-{s}", .{ output_dir, target_name });
 
@@ -705,7 +879,7 @@ fn compileSharedLibrary(
     const result = try compileSources(allocator, sources, include_dirs, optimize, standard, backend, obj_dir, defines, compile_cflags, force, jobs);
 
     const needs_link = result.any_dirty or !core.fs.fileExists(output);
-    if (!needs_link) return;
+    if (!needs_link) return .{ .compile_timings = result.timings, .link_elapsed_ns = 0 };
 
     var argv: std.ArrayList([]const u8) = .empty;
     try appendCompilerPrefix(allocator, &argv, backend);
@@ -724,8 +898,11 @@ fn compileSharedLibrary(
         try argv.append(allocator, output);
     }
 
+    const link_start = nowNs();
     const code = try core.exec.runInherit(allocator, argv.items);
+    const link_elapsed = elapsedNs(link_start);
     if (code != 0) return error.CompileFailed;
+    return .{ .compile_timings = result.timings, .link_elapsed_ns = link_elapsed };
 }
 
 fn compileStaticLibrary(
@@ -742,12 +919,14 @@ fn compileStaticLibrary(
     cflags: []const []const u8,
     force: bool,
     jobs: u32,
-) !void {
+) !TimedBuildResult {
     const obj_dir = try std.fmt.allocPrint(allocator, "{s}/obj-{s}", .{ output_dir, target_name });
     const result = try compileSources(allocator, sources, include_dirs, optimize, standard, backend, obj_dir, defines, cflags, force, jobs);
 
     const needs_archive = result.any_dirty or !core.fs.fileExists(output);
-    if (!needs_archive) return;
+    if (!needs_archive) return .{ .compile_timings = result.timings, .link_elapsed_ns = 0 };
+
+    const link_start = nowNs();
 
     if (std.mem.eql(u8, backend, "msvc")) {
         var lib_argv: std.ArrayList([]const u8) = .empty;
@@ -767,6 +946,9 @@ fn compileStaticLibrary(
         const ar_code = try core.exec.runInherit(allocator, ar_argv.items);
         if (ar_code != 0) return error.ArchiveFailed;
     }
+
+    const link_elapsed = elapsedNs(link_start);
+    return .{ .compile_timings = result.timings, .link_elapsed_ns = link_elapsed };
 }
 
 fn appendCompilerPrefix(

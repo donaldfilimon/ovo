@@ -94,7 +94,6 @@ zig build test-all
 - `src/translate/` import/export format adapters
 - `src/graph/` build graph visualization (`tree` command)
 - `src/cli/` CLI parser, registry, help, dispatch, and handlers
-- `src/neural/` legacy neural utilities
 
 ## Translation Notes
 
