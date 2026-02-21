@@ -33,9 +33,45 @@ pub fn handleInit(ctx: *Context, _: []const []const u8) !u8 {
 pub fn handleBuild(ctx: *Context, command_args: []const []const u8, _: []const []const u8) !u8 {
     var force = false;
     var target_name: ?[]const u8 = null;
-    for (command_args) |arg| {
+    var jobs: u32 = 0;
+
+    var i: usize = 0;
+    while (i < command_args.len) : (i += 1) {
+        const arg = command_args[i];
         if (std.mem.eql(u8, arg, "--force")) {
             force = true;
+        } else if (std.mem.eql(u8, arg, "-j") or std.mem.eql(u8, arg, "--jobs")) {
+            i += 1;
+            if (i >= command_args.len) {
+                try ctx.printErr("error: {s} requires a job count\n", .{arg});
+                return 2;
+            }
+            jobs = std.fmt.parseInt(u32, command_args[i], 10) catch {
+                try ctx.printErr("error: invalid job count '{s}'\n", .{command_args[i]});
+                return 2;
+            };
+            if (jobs == 0) {
+                try ctx.printErr("error: job count must be >= 1\n", .{});
+                return 2;
+            }
+        } else if (std.mem.startsWith(u8, arg, "--jobs=")) {
+            jobs = std.fmt.parseInt(u32, arg["--jobs=".len..], 10) catch {
+                try ctx.printErr("error: invalid --jobs value '{s}'\n", .{arg["--jobs=".len..]});
+                return 2;
+            };
+            if (jobs == 0) {
+                try ctx.printErr("error: job count must be >= 1\n", .{});
+                return 2;
+            }
+        } else if (std.mem.startsWith(u8, arg, "-j")) {
+            jobs = std.fmt.parseInt(u32, arg[2..], 10) catch {
+                try ctx.printErr("error: invalid -j value '{s}'\n", .{arg[2..]});
+                return 2;
+            };
+            if (jobs == 0) {
+                try ctx.printErr("error: job count must be >= 1\n", .{});
+                return 2;
+            }
         } else if (std.mem.startsWith(u8, arg, "--")) {
             try ctx.printErr("error: unknown build flag '{s}'\n", .{arg});
             return 2;
@@ -47,6 +83,7 @@ pub fn handleBuild(ctx: *Context, command_args: []const []const u8, _: []const [
         .target_name = target_name,
         .optimize_override = ctx.profile,
         .force = force,
+        .jobs = jobs,
     });
     try ctx.print("build: project={s}\n", .{result.project_name});
     for (result.artifacts) |artifact| {

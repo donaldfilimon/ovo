@@ -11,6 +11,7 @@ pub const BuildOptions = struct {
     backend_override: ?[]const u8 = null,
     test_only: bool = false,
     force: bool = false,
+    jobs: u32 = 0,
 };
 
 pub const BuiltArtifact = struct {
@@ -38,9 +39,12 @@ pub fn buildProject(allocator: std.mem.Allocator, options: BuildOptions) !BuildR
 
     const optimize = options.optimize_override orelse project.defaults.optimize;
     const backend = options.backend_override orelse project.defaults.backend;
+    const jobs = options.jobs;
 
-    var built_any = false;
-    for (project.targets) |target| {
+    // Collect active (filtered) target indices
+    var active_indices: std.ArrayList(usize) = .empty;
+    defer active_indices.deinit(allocator);
+    for (project.targets, 0..) |target, i| {
         if (options.target_name) |target_name| {
             if (!std.mem.eql(u8, target.name, target_name)) continue;
         }
@@ -48,27 +52,124 @@ pub fn buildProject(allocator: std.mem.Allocator, options: BuildOptions) !BuildR
             if (std.mem.indexOf(u8, target.name, pattern) == null) continue;
         }
         if (options.test_only and target.kind != .test_target and std.mem.indexOf(u8, target.name, "test") == null) continue;
-
-        const artifact_path = try buildTarget(
-            allocator,
-            &project,
-            target,
-            optimize,
-            backend,
-            options.force,
-        );
-        try artifacts.append(allocator, .{
-            .name = target.name,
-            .kind = target.kind,
-            .path = artifact_path,
-        });
-        built_any = true;
+        try active_indices.append(allocator, i);
     }
 
-    if (!built_any) {
+    if (active_indices.items.len == 0) {
         if (options.target_name != null) return error.TargetNotFound;
         if (options.test_only) return error.NoTestTargets;
         return error.NoTargets;
+    }
+
+    // Compute dependency waves for cross-target parallelism
+    const waves = try computeTargetWaves(allocator, project.targets, active_indices.items);
+    defer {
+        for (waves) |wave| allocator.free(wave);
+        allocator.free(waves);
+    }
+
+    const job_limit = if (jobs == 0) detectJobCount() else jobs;
+
+    for (waves) |wave| {
+        if (wave.len == 1) {
+            // Single target in wave — build directly (no threading overhead)
+            const target_idx = wave[0];
+            const target = project.targets[target_idx];
+            const artifact_path = try buildTarget(
+                allocator,
+                &project,
+                target,
+                optimize,
+                backend,
+                options.force,
+                jobs,
+            );
+            try artifacts.append(allocator, .{
+                .name = target.name,
+                .kind = target.kind,
+                .path = artifact_path,
+            });
+        } else {
+            // Multiple independent targets — build in parallel
+            // Shared GPA for target threads — deinited AFTER consuming results
+            var target_gpa: std.heap.DebugAllocator(.{}) = .init;
+            const target_gpa_alloc = target_gpa.allocator();
+
+            const wave_results = try allocator.alloc(TargetBuildResult, wave.len);
+            defer allocator.free(wave_results);
+            for (wave_results) |*r| r.* = .{};
+
+            var wave_job_args = try allocator.alloc(TargetBuildJobArgs, wave.len);
+            defer allocator.free(wave_job_args);
+
+            var wave_threads = try allocator.alloc(?std.Thread, wave.len);
+            defer allocator.free(wave_threads);
+            for (wave_threads) |*t| t.* = null;
+
+            var active_count = std.atomic.Value(u32).init(0);
+            // Divide job budget across targets in wave to avoid oversubscription
+            const jobs_per_target = @max(1, job_limit / @as(u32, @intCast(wave.len)));
+
+            for (wave, 0..) |target_idx, wi| {
+                // Bounded concurrency via CAS loop
+                while (true) {
+                    const current = active_count.load(.acquire);
+                    if (current >= @as(u32, @intCast(wave.len))) {
+                        std.Thread.yield() catch {};
+                        continue;
+                    }
+                    if (active_count.cmpxchgWeak(current, current + 1, .acq_rel, .acquire) == null) break;
+                }
+
+                wave_job_args[wi] = .{
+                    .project = &project,
+                    .target_idx = target_idx,
+                    .optimize = optimize,
+                    .backend = backend,
+                    .force = options.force,
+                    .jobs = jobs_per_target,
+                    .result = &wave_results[wi],
+                    .active_count = &active_count,
+                    .shared_gpa = target_gpa_alloc,
+                };
+                wave_threads[wi] = std.Thread.spawn(.{}, targetBuildThread, .{&wave_job_args[wi]}) catch {
+                    _ = active_count.fetchSub(1, .release);
+                    wave_results[wi].err = error.SpawnFailed;
+                    continue;
+                };
+            }
+
+            // Join all threads in this wave
+            for (wave_threads) |maybe_t| {
+                if (maybe_t) |t| t.join();
+            }
+
+            // Collect results, then deinit shared GPA
+            var first_err: ?anyerror = null;
+            for (wave, 0..) |target_idx, wi| {
+                if (wave_results[wi].err) |err| {
+                    if (first_err == null) first_err = err;
+                    continue;
+                }
+                const target = project.targets[target_idx];
+                // Dupe artifact_path to the arena allocator so it survives GPA deinit
+                const path_copy = allocator.dupe(u8, wave_results[wi].artifact_path) catch {
+                    if (first_err == null) first_err = error.OutOfMemory;
+                    continue;
+                };
+                artifacts.append(allocator, .{
+                    .name = target.name,
+                    .kind = target.kind,
+                    .path = path_copy,
+                }) catch {
+                    if (first_err == null) first_err = error.OutOfMemory;
+                    continue;
+                };
+            }
+
+            _ = target_gpa.deinit();
+            if (first_err) |err| return err;
+        }
     }
 
     try writeCompileCommands(allocator, project);
@@ -137,6 +238,7 @@ fn buildTarget(
     optimize: []const u8,
     backend: []const u8,
     force: bool,
+    jobs: u32,
 ) ![]const u8 {
     var resolved_sources_list: std.ArrayList([]const u8) = .empty;
     errdefer resolved_sources_list.deinit(allocator);
@@ -169,6 +271,7 @@ fn buildTarget(
                 target.defines,
                 target.cflags,
                 force,
+                jobs,
             );
         },
         .library_shared => {
@@ -186,6 +289,7 @@ fn buildTarget(
                 target.defines,
                 target.cflags,
                 force,
+                jobs,
             );
         },
         .library_static => {
@@ -202,11 +306,119 @@ fn buildTarget(
                 target.defines,
                 target.cflags,
                 force,
+                jobs,
             );
         },
     }
 
     return output;
+}
+
+const TargetBuildResult = struct {
+    artifact_path: []const u8 = "",
+    err: ?anyerror = null,
+};
+
+const TargetBuildJobArgs = struct {
+    project: *const project_mod.Project,
+    target_idx: usize,
+    optimize: []const u8,
+    backend: []const u8,
+    force: bool,
+    jobs: u32,
+    result: *TargetBuildResult,
+    active_count: *std.atomic.Value(u32),
+    shared_gpa: std.mem.Allocator,
+};
+
+fn targetBuildThread(args: *TargetBuildJobArgs) void {
+    defer _ = args.active_count.fetchSub(1, .release);
+
+    // Per-thread arena backed by the shared GPA (DebugAllocator is thread-safe)
+    var thread_arena = std.heap.ArenaAllocator.init(args.shared_gpa);
+    defer thread_arena.deinit();
+    const alloc = thread_arena.allocator();
+
+    const target = args.project.targets[args.target_idx];
+    const path = buildTarget(
+        alloc,
+        args.project,
+        target,
+        args.optimize,
+        args.backend,
+        args.force,
+        args.jobs,
+    ) catch |err| {
+        args.result.err = err;
+        return;
+    };
+
+    // Dupe artifact_path to shared GPA so it survives arena deinit
+    args.result.artifact_path = args.shared_gpa.dupe(u8, path) catch {
+        args.result.err = error.OutOfMemory;
+        return;
+    };
+}
+
+fn computeTargetWaves(
+    allocator: std.mem.Allocator,
+    all_targets: []const project_mod.Target,
+    active: []const usize,
+) ![][]usize {
+    // Build name → active position map
+    var name_to_pos = std.StringHashMap(usize).init(allocator);
+    defer name_to_pos.deinit();
+    for (active, 0..) |target_idx, pos| {
+        try name_to_pos.put(all_targets[target_idx].name, pos);
+    }
+
+    // Compute wave IDs via multi-pass relaxation
+    var wave_ids = try allocator.alloc(usize, active.len);
+    defer allocator.free(wave_ids);
+    @memset(wave_ids, 0);
+
+    var changed = true;
+    while (changed) {
+        changed = false;
+        for (active, 0..) |target_idx, pos| {
+            const target = all_targets[target_idx];
+            for (target.link_libraries) |lib| {
+                if (name_to_pos.get(lib)) |dep_pos| {
+                    const needed = wave_ids[dep_pos] + 1;
+                    if (needed > wave_ids[pos]) {
+                        wave_ids[pos] = needed;
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+
+    // Find max wave
+    var max_wave: usize = 0;
+    for (wave_ids) |w| max_wave = @max(max_wave, w);
+
+    // Count targets per wave
+    var counts = try allocator.alloc(usize, max_wave + 1);
+    defer allocator.free(counts);
+    @memset(counts, 0);
+    for (wave_ids) |w| counts[w] += 1;
+
+    // Allocate wave slices
+    var waves = try allocator.alloc([]usize, max_wave + 1);
+    for (waves, 0..) |*w, wi| {
+        w.* = try allocator.alloc(usize, counts[wi]);
+    }
+
+    // Fill wave slices with target indices (from all_targets, not active positions)
+    @memset(counts, 0);
+    for (active, 0..) |target_idx, pos| {
+        const w = wave_ids[pos];
+        waves[w][counts[w]] = target_idx;
+        counts[w] += 1;
+    }
+
+    return waves;
 }
 
 fn sourceToObjectPath(
@@ -230,6 +442,36 @@ const CompileResult = struct {
     any_dirty: bool,
 };
 
+fn detectJobCount() u32 {
+    const n = std.Thread.getCpuCount() catch return 4;
+    return @intCast(@max(1, n));
+}
+
+const CompileJobResult = struct {
+    failed: bool = false,
+    stdout: ?[]u8 = null,
+    stderr: ?[]u8 = null,
+};
+
+const CompileJobArgs = struct {
+    argv: []const []const u8,
+    result: *CompileJobResult,
+    active_count: *std.atomic.Value(u32),
+    gpa: std.mem.Allocator,
+};
+
+fn compileJobThread(args: *CompileJobArgs) void {
+    defer _ = args.active_count.fetchSub(1, .release);
+
+    const cap = core.exec.runCapture(args.gpa, args.argv) catch {
+        args.result.failed = true;
+        return;
+    };
+    args.result.stdout = cap.stdout;
+    args.result.stderr = cap.stderr;
+    args.result.failed = cap.code != 0;
+}
+
 fn compileSources(
     allocator: std.mem.Allocator,
     sources: []const []const u8,
@@ -241,15 +483,23 @@ fn compileSources(
     defines: []const []const u8,
     cflags: []const []const u8,
     force: bool,
+    jobs: u32,
 ) !CompileResult {
     try core.fs.ensureDir(obj_dir);
     const is_msvc = std.mem.eql(u8, backend, "msvc");
+    const job_limit = if (jobs == 0) detectJobCount() else jobs;
 
+    // Phase 1: Pre-compute all object paths, dirty flags, and compile commands
     var objects: std.ArrayList([]const u8) = .empty;
     errdefer objects.deinit(allocator);
     var any_dirty = false;
 
-    for (sources) |source| {
+    var dirty_indices: std.ArrayList(usize) = .empty;
+    defer dirty_indices.deinit(allocator);
+    var all_argvs: std.ArrayList([]const []const u8) = .empty;
+    defer all_argvs.deinit(allocator);
+
+    for (sources, 0..) |source, i| {
         const obj = try sourceToObjectPath(allocator, obj_dir, source, is_msvc);
         try objects.append(allocator, obj);
 
@@ -276,14 +526,112 @@ fn compileSources(
             try compile_argv.append(allocator, "-o");
             try compile_argv.append(allocator, obj);
         }
+        try dirty_indices.append(allocator, i);
+        try all_argvs.append(allocator, try compile_argv.toOwnedSlice(allocator));
+    }
 
-        const code = try core.exec.runInherit(allocator, compile_argv.items);
-        if (code != 0) return error.CompileFailed;
+    const dirty_count = dirty_indices.items.len;
+    if (dirty_count == 0) {
+        return .{
+            .objects = try objects.toOwnedSlice(allocator),
+            .any_dirty = false,
+        };
+    }
+
+    // Serial path: 1 job or 1 dirty source — skip threading overhead
+    if (job_limit == 1 or dirty_count == 1) {
+        var failed_count: usize = 0;
+        for (all_argvs.items) |argv| {
+            const code = core.exec.runInherit(allocator, argv) catch {
+                failed_count += 1;
+                continue;
+            };
+            if (code != 0) failed_count += 1;
+        }
+        if (failed_count > 0) return error.CompileFailed;
+        return .{
+            .objects = try objects.toOwnedSlice(allocator),
+            .any_dirty = true,
+        };
+    }
+
+    // Phase 2: Parallel dispatch with bounded concurrency
+    // Shared GPA for captured output — deinited AFTER consuming results
+    var capture_gpa: std.heap.DebugAllocator(.{}) = .init;
+    const capture_alloc = capture_gpa.allocator();
+
+    var results = try allocator.alloc(CompileJobResult, dirty_count);
+    defer allocator.free(results);
+    for (results) |*r| r.* = .{};
+
+    var job_args_store = try allocator.alloc(CompileJobArgs, dirty_count);
+    defer allocator.free(job_args_store);
+
+    var threads = try allocator.alloc(?std.Thread, dirty_count);
+    defer allocator.free(threads);
+    for (threads) |*t| t.* = null;
+
+    var active_count = std.atomic.Value(u32).init(0);
+
+    for (all_argvs.items, 0..) |argv, di| {
+        // Bounded concurrency via CAS loop — prevents exceeding job_limit
+        while (true) {
+            const current = active_count.load(.acquire);
+            if (current >= job_limit) {
+                std.Thread.yield() catch {};
+                continue;
+            }
+            if (active_count.cmpxchgWeak(current, current + 1, .acq_rel, .acquire) == null) break;
+        }
+
+        job_args_store[di] = .{
+            .argv = argv,
+            .result = &results[di],
+            .active_count = &active_count,
+            .gpa = capture_alloc,
+        };
+        threads[di] = std.Thread.spawn(.{}, compileJobThread, .{&job_args_store[di]}) catch {
+            _ = active_count.fetchSub(1, .release);
+            results[di].failed = true;
+            continue;
+        };
+    }
+
+    // Phase 3: Join all threads
+    for (threads) |maybe_thread| {
+        if (maybe_thread) |thread| thread.join();
+    }
+
+    // Phase 4: Print captured output atomically and count failures
+    var failed_count: usize = 0;
+    for (results, 0..) |result, di| {
+        if (result.stderr) |s| {
+            if (s.len > 0) {
+                const source_idx = dirty_indices.items[di];
+                std.debug.print("--- {s} ---\n{s}", .{ sources[source_idx], s });
+            }
+        }
+        if (result.stdout) |s| {
+            if (s.len > 0) std.debug.print("{s}", .{s});
+        }
+        if (result.failed) failed_count += 1;
+    }
+
+    // Free captured output and deinit shared GPA
+    for (results) |result| {
+        if (result.stdout) |s| capture_alloc.free(s);
+        if (result.stderr) |s| capture_alloc.free(s);
+    }
+    _ = capture_gpa.deinit();
+
+    if (failed_count > 0) {
+        std.debug.print("error: {d} of {d} compilation(s) failed\n", .{ failed_count, dirty_count });
+        return error.CompileFailed;
     }
 
     return .{
         .objects = try objects.toOwnedSlice(allocator),
-        .any_dirty = any_dirty,
+        .any_dirty = true,
     };
 }
 
@@ -301,9 +649,10 @@ fn compileAndLinkExecutable(
     defines: []const []const u8,
     cflags: []const []const u8,
     force: bool,
+    jobs: u32,
 ) !void {
     const obj_dir = try std.fmt.allocPrint(allocator, "{s}/obj-{s}", .{ output_dir, target_name });
-    const result = try compileSources(allocator, sources, include_dirs, optimize, standard, backend, obj_dir, defines, cflags, force);
+    const result = try compileSources(allocator, sources, include_dirs, optimize, standard, backend, obj_dir, defines, cflags, force, jobs);
 
     const needs_link = result.any_dirty or !core.fs.fileExists(output);
     if (!needs_link) return;
@@ -339,6 +688,7 @@ fn compileSharedLibrary(
     defines: []const []const u8,
     cflags: []const []const u8,
     force: bool,
+    jobs: u32,
 ) !void {
     const is_msvc = std.mem.eql(u8, backend, "msvc");
     const obj_dir = try std.fmt.allocPrint(allocator, "{s}/obj-{s}", .{ output_dir, target_name });
@@ -352,7 +702,7 @@ fn compileSharedLibrary(
         break :blk extended.items;
     } else cflags;
 
-    const result = try compileSources(allocator, sources, include_dirs, optimize, standard, backend, obj_dir, defines, compile_cflags, force);
+    const result = try compileSources(allocator, sources, include_dirs, optimize, standard, backend, obj_dir, defines, compile_cflags, force, jobs);
 
     const needs_link = result.any_dirty or !core.fs.fileExists(output);
     if (!needs_link) return;
@@ -391,9 +741,10 @@ fn compileStaticLibrary(
     defines: []const []const u8,
     cflags: []const []const u8,
     force: bool,
+    jobs: u32,
 ) !void {
     const obj_dir = try std.fmt.allocPrint(allocator, "{s}/obj-{s}", .{ output_dir, target_name });
-    const result = try compileSources(allocator, sources, include_dirs, optimize, standard, backend, obj_dir, defines, cflags, force);
+    const result = try compileSources(allocator, sources, include_dirs, optimize, standard, backend, obj_dir, defines, cflags, force, jobs);
 
     const needs_archive = result.any_dirty or !core.fs.fileExists(output);
     if (!needs_archive) return;
@@ -613,6 +964,52 @@ fn trimTrailingSlashes(value: []const u8) []const u8 {
     var end = value.len;
     while (end > 0 and value[end - 1] == '/') : (end -= 1) {}
     return value[0..end];
+}
+
+test "detectJobCount returns at least 1" {
+    const count = detectJobCount();
+    try std.testing.expect(count >= 1);
+}
+
+test "computeTargetWaves orders dependencies correctly" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Target "app" links "mylib"; "mylib" has no deps
+    const targets = &[_]project_mod.Target{
+        .{ .name = "mylib", .kind = .library_static },
+        .{ .name = "app", .kind = .executable, .link_libraries = &.{"mylib"} },
+    };
+    const active = &[_]usize{ 0, 1 };
+
+    const waves = try computeTargetWaves(alloc, targets, active);
+
+    // Wave 0 should contain "mylib" (index 0), wave 1 should contain "app" (index 1)
+    try std.testing.expectEqual(@as(usize, 2), waves.len);
+    try std.testing.expectEqual(@as(usize, 1), waves[0].len);
+    try std.testing.expectEqual(@as(usize, 0), waves[0][0]);
+    try std.testing.expectEqual(@as(usize, 1), waves[1].len);
+    try std.testing.expectEqual(@as(usize, 1), waves[1][0]);
+}
+
+test "computeTargetWaves puts independent targets in same wave" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const targets = &[_]project_mod.Target{
+        .{ .name = "a", .kind = .executable },
+        .{ .name = "b", .kind = .executable },
+        .{ .name = "c", .kind = .executable },
+    };
+    const active = &[_]usize{ 0, 1, 2 };
+
+    const waves = try computeTargetWaves(alloc, targets, active);
+
+    // All independent → single wave
+    try std.testing.expectEqual(@as(usize, 1), waves.len);
+    try std.testing.expectEqual(@as(usize, 3), waves[0].len);
 }
 
 test "sourceToObjectPath produces stable path-derived names" {

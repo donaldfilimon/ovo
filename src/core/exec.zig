@@ -40,6 +40,27 @@ pub fn runQuiet(allocator: std.mem.Allocator, argv: []const []const u8) !u8 {
     };
 }
 
+pub const CaptureResult = struct {
+    code: u8,
+    stdout: []u8,
+    stderr: []u8,
+};
+
+pub fn runCapture(allocator: std.mem.Allocator, argv: []const []const u8) !CaptureResult {
+    const result = try std.process.run(allocator, runtime.io(), .{ .argv = argv });
+    const code: u8 = switch (result.term) {
+        .exited => |c| c,
+        .signal => 128,
+        .stopped => 129,
+        .unknown => 130,
+    };
+    return .{
+        .code = code,
+        .stdout = result.stdout,
+        .stderr = result.stderr,
+    };
+}
+
 pub fn commandExists(allocator: std.mem.Allocator, command: []const u8) bool {
     // Use 'which' to check PATH lookup — works for all commands regardless
     // of whether they support --version

@@ -33,9 +33,9 @@ pub const commands = [_]CommandSpec{
     .{
         .name = "build",
         .summary = "Build the project",
-        .usage = "ovo build [--force] [target]",
+        .usage = "ovo build [--force] [-jN] [--jobs=N] [target]",
         .group = .basic,
-        .examples = &.{"ovo build"},
+        .examples = &.{ "ovo build", "ovo build -j8", "ovo build --jobs=4 mylib" },
     },
     .{
         .name = "run",
