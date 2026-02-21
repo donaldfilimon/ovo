@@ -2,7 +2,7 @@
 
 ## Baseline
 
-- Use Zig `0.16.0-dev.2535+b5bd49460` (from `.zigversion`)
+- Use Zig `0.16.0-dev.2623+27eec9bd6` (from `.zigversion`)
 - Run commands with the project-managed toolchain when possible
 
 ## Fast Path

@@ -10,6 +10,7 @@ pub const BuildOptions = struct {
     optimize_override: ?[]const u8 = null,
     backend_override: ?[]const u8 = null,
     test_only: bool = false,
+    force: bool = false,
 };
 
 pub const BuiltArtifact = struct {
@@ -54,6 +55,7 @@ pub fn buildProject(allocator: std.mem.Allocator, options: BuildOptions) !BuildR
             target,
             optimize,
             backend,
+            options.force,
         );
         try artifacts.append(allocator, .{
             .name = target.name,
@@ -134,6 +136,7 @@ fn buildTarget(
     target: project_mod.Target,
     optimize: []const u8,
     backend: []const u8,
+    force: bool,
 ) ![]const u8 {
     var resolved_sources_list: std.ArrayList([]const u8) = .empty;
     errdefer resolved_sources_list.deinit(allocator);
@@ -161,6 +164,11 @@ fn buildTarget(
                 project.defaults.cpp_standard,
                 backend,
                 output,
+                project.defaults.output_dir,
+                target.name,
+                target.defines,
+                target.cflags,
+                force,
             );
         },
         .library_shared => {
@@ -173,6 +181,11 @@ fn buildTarget(
                 project.defaults.cpp_standard,
                 backend,
                 output,
+                project.defaults.output_dir,
+                target.name,
+                target.defines,
+                target.cflags,
+                force,
             );
         },
         .library_static => {
@@ -186,11 +199,92 @@ fn buildTarget(
                 output,
                 project.defaults.output_dir,
                 target.name,
+                target.defines,
+                target.cflags,
+                force,
             );
         },
     }
 
     return output;
+}
+
+fn sourceToObjectPath(
+    allocator: std.mem.Allocator,
+    obj_dir: []const u8,
+    source: []const u8,
+    is_msvc: bool,
+) ![]const u8 {
+    const mangled = try allocator.dupe(u8, source);
+    for (mangled) |*c| {
+        if (c.* == '/' or c.* == '\\' or c.* == ':' or c.* == '.') c.* = '_';
+    }
+    var trimmed: []const u8 = mangled;
+    while (trimmed.len > 0 and trimmed[0] == '_') trimmed = trimmed[1..];
+    const ext: []const u8 = if (is_msvc) ".obj" else ".o";
+    return std.fmt.allocPrint(allocator, "{s}/{s}{s}", .{ obj_dir, trimmed, ext });
+}
+
+const CompileResult = struct {
+    objects: []const []const u8,
+    any_dirty: bool,
+};
+
+fn compileSources(
+    allocator: std.mem.Allocator,
+    sources: []const []const u8,
+    include_dirs: []const []const u8,
+    optimize: []const u8,
+    standard: project_mod.CppStandard,
+    backend: []const u8,
+    obj_dir: []const u8,
+    defines: []const []const u8,
+    cflags: []const []const u8,
+    force: bool,
+) !CompileResult {
+    try core.fs.ensureDir(obj_dir);
+    const is_msvc = std.mem.eql(u8, backend, "msvc");
+
+    var objects: std.ArrayList([]const u8) = .empty;
+    errdefer objects.deinit(allocator);
+    var any_dirty = false;
+
+    for (sources) |source| {
+        const obj = try sourceToObjectPath(allocator, obj_dir, source, is_msvc);
+        try objects.append(allocator, obj);
+
+        const dirty = blk: {
+            if (force) break :blk true;
+            const src_mtime = core.fs.fileMtimeNs(source) catch break :blk true;
+            const obj_mtime = core.fs.fileMtimeNs(obj) catch break :blk true;
+            break :blk src_mtime > obj_mtime;
+        };
+
+        if (!dirty) continue;
+        any_dirty = true;
+
+        var compile_argv: std.ArrayList([]const u8) = .empty;
+        try appendCompilerPrefix(allocator, &compile_argv, backend);
+        try appendCommonCompileFlags(allocator, &compile_argv, optimize, standard, include_dirs, backend, defines, cflags);
+        if (is_msvc) {
+            try compile_argv.append(allocator, "/c");
+            try compile_argv.append(allocator, source);
+            try compile_argv.append(allocator, try std.fmt.allocPrint(allocator, "/Fo:{s}", .{obj}));
+        } else {
+            try compile_argv.append(allocator, "-c");
+            try compile_argv.append(allocator, source);
+            try compile_argv.append(allocator, "-o");
+            try compile_argv.append(allocator, obj);
+        }
+
+        const code = try core.exec.runInherit(allocator, compile_argv.items);
+        if (code != 0) return error.CompileFailed;
+    }
+
+    return .{
+        .objects = try objects.toOwnedSlice(allocator),
+        .any_dirty = any_dirty,
+    };
 }
 
 fn compileAndLinkExecutable(
@@ -202,14 +296,23 @@ fn compileAndLinkExecutable(
     standard: project_mod.CppStandard,
     backend: []const u8,
     output: []const u8,
+    output_dir: []const u8,
+    target_name: []const u8,
+    defines: []const []const u8,
+    cflags: []const []const u8,
+    force: bool,
 ) !void {
-    var argv: std.ArrayList([]const u8) = .empty;
-    defer argv.deinit(allocator);
+    const obj_dir = try std.fmt.allocPrint(allocator, "{s}/obj-{s}", .{ output_dir, target_name });
+    const result = try compileSources(allocator, sources, include_dirs, optimize, standard, backend, obj_dir, defines, cflags, force);
 
+    const needs_link = result.any_dirty or !core.fs.fileExists(output);
+    if (!needs_link) return;
+
+    const is_msvc = std.mem.eql(u8, backend, "msvc");
+    var argv: std.ArrayList([]const u8) = .empty;
     try appendCompilerPrefix(allocator, &argv, backend);
-    try appendCommonCompileFlags(allocator, &argv, optimize, standard, include_dirs, backend);
-    for (sources) |source| try argv.append(allocator, source);
-    if (std.mem.eql(u8, backend, "msvc")) {
+    for (result.objects) |obj| try argv.append(allocator, obj);
+    if (is_msvc) {
         for (link_libraries) |lib| try argv.append(allocator, try std.fmt.allocPrint(allocator, "{s}.lib", .{lib}));
         try argv.append(allocator, try std.fmt.allocPrint(allocator, "/Fe:{s}", .{output}));
     } else {
@@ -231,20 +334,38 @@ fn compileSharedLibrary(
     standard: project_mod.CppStandard,
     backend: []const u8,
     output: []const u8,
+    output_dir: []const u8,
+    target_name: []const u8,
+    defines: []const []const u8,
+    cflags: []const []const u8,
+    force: bool,
 ) !void {
-    var argv: std.ArrayList([]const u8) = .empty;
-    defer argv.deinit(allocator);
+    const is_msvc = std.mem.eql(u8, backend, "msvc");
+    const obj_dir = try std.fmt.allocPrint(allocator, "{s}/obj-{s}", .{ output_dir, target_name });
 
+    // For shared libraries, add -fPIC to compile flags (non-MSVC)
+    const compile_cflags: []const []const u8 = if (!is_msvc) blk: {
+        var extended: std.ArrayList([]const u8) = .empty;
+        errdefer extended.deinit(allocator);
+        try extended.append(allocator, "-fPIC");
+        for (cflags) |flag| try extended.append(allocator, flag);
+        break :blk extended.items;
+    } else cflags;
+
+    const result = try compileSources(allocator, sources, include_dirs, optimize, standard, backend, obj_dir, defines, compile_cflags, force);
+
+    const needs_link = result.any_dirty or !core.fs.fileExists(output);
+    if (!needs_link) return;
+
+    var argv: std.ArrayList([]const u8) = .empty;
     try appendCompilerPrefix(allocator, &argv, backend);
-    if (std.mem.eql(u8, backend, "msvc")) {
+    if (is_msvc) {
         try argv.append(allocator, "/LD");
     } else {
         try argv.append(allocator, "-shared");
-        try argv.append(allocator, "-fPIC");
     }
-    try appendCommonCompileFlags(allocator, &argv, optimize, standard, include_dirs, backend);
-    for (sources) |source| try argv.append(allocator, source);
-    if (std.mem.eql(u8, backend, "msvc")) {
+    for (result.objects) |obj| try argv.append(allocator, obj);
+    if (is_msvc) {
         for (link_libraries) |lib| try argv.append(allocator, try std.fmt.allocPrint(allocator, "{s}.lib", .{lib}));
         try argv.append(allocator, try std.fmt.allocPrint(allocator, "/Fe:{s}", .{output}));
     } else {
@@ -267,55 +388,30 @@ fn compileStaticLibrary(
     output: []const u8,
     output_dir: []const u8,
     target_name: []const u8,
+    defines: []const []const u8,
+    cflags: []const []const u8,
+    force: bool,
 ) !void {
     const obj_dir = try std.fmt.allocPrint(allocator, "{s}/obj-{s}", .{ output_dir, target_name });
-    try core.fs.ensureDir(obj_dir);
+    const result = try compileSources(allocator, sources, include_dirs, optimize, standard, backend, obj_dir, defines, cflags, force);
 
-    var objects: std.ArrayList([]const u8) = .empty;
-    defer objects.deinit(allocator);
-
-    for (sources, 0..) |source, i| {
-        const obj_ext = if (std.mem.eql(u8, backend, "msvc")) ".obj" else ".o";
-        const obj = try std.fmt.allocPrint(allocator, "{s}/{d}{s}", .{ obj_dir, i, obj_ext });
-        try objects.append(allocator, obj);
-
-        var compile_argv: std.ArrayList([]const u8) = .empty;
-        defer compile_argv.deinit(allocator);
-        try appendCompilerPrefix(allocator, &compile_argv, backend);
-        try appendCommonCompileFlags(allocator, &compile_argv, optimize, standard, include_dirs, backend);
-        if (std.mem.eql(u8, backend, "msvc")) {
-            try compile_argv.append(allocator, "/c");
-        } else {
-            try compile_argv.append(allocator, "-c");
-        }
-        try compile_argv.append(allocator, source);
-        if (std.mem.eql(u8, backend, "msvc")) {
-            try compile_argv.append(allocator, try std.fmt.allocPrint(allocator, "/Fo:{s}", .{obj}));
-        } else {
-            try compile_argv.append(allocator, "-o");
-            try compile_argv.append(allocator, obj);
-        }
-
-        const compile_code = try core.exec.runInherit(allocator, compile_argv.items);
-        if (compile_code != 0) return error.CompileFailed;
-    }
+    const needs_archive = result.any_dirty or !core.fs.fileExists(output);
+    if (!needs_archive) return;
 
     if (std.mem.eql(u8, backend, "msvc")) {
         var lib_argv: std.ArrayList([]const u8) = .empty;
-        defer lib_argv.deinit(allocator);
         try lib_argv.append(allocator, "lib");
         try lib_argv.append(allocator, try std.fmt.allocPrint(allocator, "/OUT:{s}", .{output}));
-        for (objects.items) |obj| try lib_argv.append(allocator, obj);
+        for (result.objects) |obj| try lib_argv.append(allocator, obj);
 
         const lib_code = try core.exec.runInherit(allocator, lib_argv.items);
         if (lib_code != 0) return error.ArchiveFailed;
     } else {
         var ar_argv: std.ArrayList([]const u8) = .empty;
-        defer ar_argv.deinit(allocator);
         try ar_argv.append(allocator, "ar");
         try ar_argv.append(allocator, "rcs");
         try ar_argv.append(allocator, output);
-        for (objects.items) |obj| try ar_argv.append(allocator, obj);
+        for (result.objects) |obj| try ar_argv.append(allocator, obj);
 
         const ar_code = try core.exec.runInherit(allocator, ar_argv.items);
         if (ar_code != 0) return error.ArchiveFailed;
@@ -354,6 +450,8 @@ fn appendCommonCompileFlags(
     standard: project_mod.CppStandard,
     include_dirs: []const []const u8,
     backend: []const u8,
+    defines: []const []const u8,
+    cflags: []const []const u8,
 ) !void {
     if (std.mem.eql(u8, backend, "msvc")) {
         try argv.append(allocator, cppStandardFlagMsvc(standard));
@@ -363,6 +461,9 @@ fn appendCommonCompileFlags(
         for (include_dirs) |include_dir| {
             try argv.append(allocator, try std.fmt.allocPrint(allocator, "/I{s}", .{include_dir}));
         }
+        for (defines) |define| {
+            try argv.append(allocator, try std.fmt.allocPrint(allocator, "/D{s}", .{define}));
+        }
     } else {
         try argv.append(allocator, cppStandardFlag(standard));
         try argv.append(allocator, try optimizeFlag(optimize));
@@ -371,6 +472,12 @@ fn appendCommonCompileFlags(
         for (include_dirs) |include_dir| {
             try argv.append(allocator, try std.fmt.allocPrint(allocator, "-I{s}", .{include_dir}));
         }
+        for (defines) |define| {
+            try argv.append(allocator, try std.fmt.allocPrint(allocator, "-D{s}", .{define}));
+        }
+    }
+    for (cflags) |flag| {
+        try argv.append(allocator, flag);
     }
 }
 
@@ -506,4 +613,19 @@ fn trimTrailingSlashes(value: []const u8) []const u8 {
     var end = value.len;
     while (end > 0 and value[end - 1] == '/') : (end -= 1) {}
     return value[0..end];
+}
+
+test "sourceToObjectPath produces stable path-derived names" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const path = try sourceToObjectPath(alloc, ".ovo/build/obj-app", "src/util/helper.cpp", false);
+    try std.testing.expectEqualStrings(".ovo/build/obj-app/src_util_helper_cpp.o", path);
+
+    const msvc = try sourceToObjectPath(alloc, ".ovo/build/obj-app", "src/main.cpp", true);
+    try std.testing.expectEqualStrings(".ovo/build/obj-app/src_main_cpp.obj", msvc);
+
+    const dotslash = try sourceToObjectPath(alloc, "obj", "./src/a.cpp", false);
+    try std.testing.expectEqualStrings("obj/src_a_cpp.o", dotslash);
 }

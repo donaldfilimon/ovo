@@ -39,6 +39,20 @@ pub fn renderBuildZon(allocator: std.mem.Allocator, project: project_mod.Project
             try output.print(allocator, "                \"{s}\",\n", .{lib});
         }
         try output.appendSlice(allocator, "            },\n");
+        if (target.defines.len > 0) {
+            try output.appendSlice(allocator, "            .defines = .{\n");
+            for (target.defines) |define| {
+                try output.print(allocator, "                \"{s}\",\n", .{define});
+            }
+            try output.appendSlice(allocator, "            },\n");
+        }
+        if (target.cflags.len > 0) {
+            try output.appendSlice(allocator, "            .cflags = .{\n");
+            for (target.cflags) |flag| {
+                try output.print(allocator, "                \"{s}\",\n", .{flag});
+            }
+            try output.appendSlice(allocator, "            },\n");
+        }
         try output.appendSlice(allocator, "        },\n");
     }
     try output.appendSlice(allocator, "    },\n");

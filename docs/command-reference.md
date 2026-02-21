@@ -39,6 +39,7 @@ This document mirrors `src/cli/command_registry.zig`.
 - `fmt`
 - `lint`
 - `info`
+- `tree [--format=ascii|dot|json|mermaid] [--target=name]`
 
 ## Translation Commands
 

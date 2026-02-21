@@ -12,3 +12,4 @@ pub const build_orchestrator = @import("build/orchestrator.zig");
 pub const core_project = @import("core/project.zig");
 pub const package_manager = @import("package/manager.zig");
 pub const translate = @import("translate/mod.zig");
+pub const graph = @import("graph/mod.zig");

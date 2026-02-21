@@ -2,6 +2,7 @@ const std = @import("std");
 const core = @import("../core/mod.zig");
 const project_mod = @import("../core/project.zig");
 const zon = @import("../zon/mod.zig");
+const exec = @import("../core/exec.zig");
 
 pub const PackageManager = struct {
     allocator: std.mem.Allocator,
@@ -56,12 +57,20 @@ pub const PackageManager = struct {
         var fetch_log: std.ArrayList(u8) = .empty;
         for (project.dependencies) |dep| {
             const dep_dir = try std.fmt.allocPrint(self.allocator, ".ovo/cache/{s}-{s}", .{ dep.name, dep.version });
-            try core.fs.ensureDir(dep_dir);
-            try core.fs.writeFile(
-                try std.fmt.allocPrint(self.allocator, "{s}/manifest.txt", .{dep_dir}),
-                try std.fmt.allocPrint(self.allocator, "name={s}\nversion={s}\nsource=registry\n", .{ dep.name, dep.version }),
-            );
-            try fetch_log.print(self.allocator, "fetched {s}@{s}\n", .{ dep.name, dep.version });
+
+            if (isGitUrl(dep.version)) {
+                try fetchGitDependency(self.allocator, dep, dep_dir, &fetch_log);
+            } else if (isLocalPath(dep.version)) {
+                try fetchLocalDependency(self.allocator, dep, dep_dir, &fetch_log);
+            } else {
+                // Registry placeholder — write manifest for future resolution
+                try core.fs.ensureDir(dep_dir);
+                try core.fs.writeFile(
+                    try std.fmt.allocPrint(self.allocator, "{s}/manifest.txt", .{dep_dir}),
+                    try std.fmt.allocPrint(self.allocator, "name={s}\nversion={s}\nsource=registry\n", .{ dep.name, dep.version }),
+                );
+                try fetch_log.print(self.allocator, "registered {s}@{s} (registry stub)\n", .{ dep.name, dep.version });
+            }
         }
         if (project.dependencies.len == 0) {
             try fetch_log.appendSlice(self.allocator, "no dependencies declared\n");
@@ -179,4 +188,83 @@ fn loadProject(allocator: std.mem.Allocator) !project_mod.Project {
 fn saveProject(allocator: std.mem.Allocator, project: project_mod.Project) !void {
     const rendered = try zon.writer.renderBuildZon(allocator, project);
     try core.fs.writeFile("build.zon", rendered);
+}
+
+fn isGitUrl(version: []const u8) bool {
+    if (std.mem.startsWith(u8, version, "https://")) return true;
+    if (std.mem.startsWith(u8, version, "http://")) return true;
+    if (std.mem.startsWith(u8, version, "git@")) return true;
+    if (std.mem.endsWith(u8, version, ".git")) return true;
+    return false;
+}
+
+fn isLocalPath(version: []const u8) bool {
+    if (version.len == 0) return false;
+    if (std.mem.startsWith(u8, version, "./")) return true;
+    if (std.mem.startsWith(u8, version, "../")) return true;
+    if (version[0] == '/') return true;
+    return false;
+}
+
+fn fetchGitDependency(
+    allocator: std.mem.Allocator,
+    dep: project_mod.Dependency,
+    dep_dir: []const u8,
+    fetch_log: *std.ArrayList(u8),
+) !void {
+    // Remove existing cache dir for a clean clone
+    try core.fs.removeTreeIfExists(dep_dir);
+
+    if (!exec.commandExists(allocator, "git")) {
+        try fetch_log.print(allocator, "SKIP {s}: git not found\n", .{dep.name});
+        return;
+    }
+
+    const code = exec.runQuiet(allocator, &.{ "git", "clone", "--depth", "1", dep.version, dep_dir }) catch {
+        try fetch_log.print(allocator, "FAIL {s}: git clone failed\n", .{dep.name});
+        return;
+    };
+
+    if (code == 0) {
+        // Write manifest
+        try core.fs.writeFile(
+            try std.fmt.allocPrint(allocator, "{s}/manifest.txt", .{dep_dir}),
+            try std.fmt.allocPrint(allocator, "name={s}\nversion={s}\nsource=git\nurl={s}\n", .{ dep.name, dep.version, dep.version }),
+        );
+        try fetch_log.print(allocator, "cloned {s} from {s}\n", .{ dep.name, dep.version });
+    } else {
+        try fetch_log.print(allocator, "FAIL {s}: git clone exited {d}\n", .{ dep.name, code });
+    }
+}
+
+fn fetchLocalDependency(
+    allocator: std.mem.Allocator,
+    dep: project_mod.Dependency,
+    dep_dir: []const u8,
+    fetch_log: *std.ArrayList(u8),
+) !void {
+    if (!core.fs.fileExists(dep.version)) {
+        try fetch_log.print(allocator, "FAIL {s}: local path not found: {s}\n", .{ dep.name, dep.version });
+        return;
+    }
+
+    // Remove existing cache dir for a clean copy
+    try core.fs.removeTreeIfExists(dep_dir);
+    try core.fs.ensureDir(dep_dir);
+
+    // Use cp -r for directory copy
+    const code = exec.runQuiet(allocator, &.{ "cp", "-r", dep.version, dep_dir }) catch {
+        try fetch_log.print(allocator, "FAIL {s}: copy failed\n", .{dep.name});
+        return;
+    };
+
+    if (code == 0) {
+        try core.fs.writeFile(
+            try std.fmt.allocPrint(allocator, "{s}/manifest.txt", .{dep_dir}),
+            try std.fmt.allocPrint(allocator, "name={s}\nversion={s}\nsource=local\npath={s}\n", .{ dep.name, dep.version, dep.version }),
+        );
+        try fetch_log.print(allocator, "copied {s} from {s}\n", .{ dep.name, dep.version });
+    } else {
+        try fetch_log.print(allocator, "FAIL {s}: copy exited {d}\n", .{ dep.name, code });
+    }
 }

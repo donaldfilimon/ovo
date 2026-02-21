@@ -45,6 +45,11 @@ pub fn deleteFileIfExists(path: []const u8) !void {
     };
 }
 
+pub fn fileMtimeNs(path: []const u8) !i96 {
+    const stat = try std.Io.Dir.cwd().statFile(runtime.io(), path, .{});
+    return stat.mtime.nanoseconds;
+}
+
 pub fn copyFile(
     allocator: std.mem.Allocator,
     source_path: []const u8,

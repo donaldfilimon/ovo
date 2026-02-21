@@ -6,6 +6,7 @@ const project_mod = @import("../core/project.zig");
 const build = @import("../build/mod.zig");
 const package = @import("../package/mod.zig");
 const translate = @import("../translate/mod.zig");
+const graph = @import("../graph/mod.zig");
 
 pub fn handleNew(ctx: *Context, command_args: []const []const u8) !u8 {
     if (command_args.len == 0) {
@@ -30,9 +31,22 @@ pub fn handleInit(ctx: *Context, _: []const []const u8) !u8 {
 }
 
 pub fn handleBuild(ctx: *Context, command_args: []const []const u8, _: []const []const u8) !u8 {
+    var force = false;
+    var target_name: ?[]const u8 = null;
+    for (command_args) |arg| {
+        if (std.mem.eql(u8, arg, "--force")) {
+            force = true;
+        } else if (std.mem.startsWith(u8, arg, "--")) {
+            try ctx.printErr("error: unknown build flag '{s}'\n", .{arg});
+            return 2;
+        } else if (target_name == null) {
+            target_name = arg;
+        }
+    }
     const result = try build.orchestrator.buildProject(ctx.allocator, .{
-        .target_name = if (command_args.len > 0) command_args[0] else null,
+        .target_name = target_name,
         .optimize_override = ctx.profile,
+        .force = force,
     });
     try ctx.print("build: project={s}\n", .{result.project_name});
     for (result.artifacts) |artifact| {
@@ -203,24 +217,41 @@ pub fn handleDoctor(ctx: *Context, _: []const []const u8) !u8 {
         try ctx.printErr("doctor: unable to run `zig version`\n", .{});
     }
 
-    const tools = [_][]const u8{
-        "zig",
-        "clang++",
-        "g++",
-        "cmake",
-        "ninja",
-        "clang-format",
-        "clang-tidy",
-        "doxygen",
-        "clang-doc",
+    const ToolCheck = struct {
+        name: []const u8,
+        required: bool,
     };
-    var missing: usize = 0;
+    const tools = [_]ToolCheck{
+        .{ .name = "zig", .required = true },
+        .{ .name = "clang++", .required = false },
+        .{ .name = "g++", .required = false },
+        .{ .name = "cmake", .required = false },
+        .{ .name = "ninja", .required = false },
+        .{ .name = "clang-format", .required = false },
+        .{ .name = "clang-tidy", .required = false },
+        .{ .name = "doxygen", .required = false },
+        .{ .name = "clang-doc", .required = false },
+    };
+    var missing_required: usize = 0;
+    var missing_optional: usize = 0;
     for (tools) |tool| {
-        const available = core.exec.commandExists(ctx.allocator, tool);
-        try ctx.print("doctor: {s} {s}\n", .{ tool, if (available) "ok" else "missing" });
-        if (!available) missing += 1;
+        const available = core.exec.commandExists(ctx.allocator, tool.name);
+        if (available) {
+            try ctx.print("doctor: {s} ok\n", .{tool.name});
+            continue;
+        }
+        if (tool.required) {
+            try ctx.print("doctor: {s} missing-required\n", .{tool.name});
+            missing_required += 1;
+        } else {
+            try ctx.print("doctor: {s} missing-optional\n", .{tool.name});
+            missing_optional += 1;
+        }
     }
-    return if (missing == 0) 0 else 1;
+    if (missing_optional > 0) {
+        try ctx.print("doctor: optional tools missing ({d}); related subcommands may use fallbacks\n", .{missing_optional});
+    }
+    return if (zig_version_code == 0 and missing_required == 0) 0 else 1;
 }
 
 pub fn handleFmt(ctx: *Context, _: []const []const u8) !u8 {
@@ -249,17 +280,67 @@ pub fn handleFmt(ctx: *Context, _: []const []const u8) !u8 {
 }
 
 pub fn handleLint(ctx: *Context, _: []const []const u8) !u8 {
-    if (!core.exec.commandExists(ctx.allocator, "clang-tidy")) {
-        try ctx.printErr("error: clang-tidy not found in PATH\n", .{});
-        return 2;
-    }
     const project = try build.orchestrator.loadProject(ctx.allocator);
+    if (core.exec.commandExists(ctx.allocator, "clang-tidy")) {
+        return runClangTidyLint(ctx, project);
+    }
+
+    const fallback = detectLintFallback(ctx.allocator) orelse {
+        try ctx.printErr("error: clang-tidy not found and no fallback compiler available\n", .{});
+        return 2;
+    };
+    try ctx.print("lint: clang-tidy missing; running syntax-only checks with {s}\n", .{fallback.label});
+    return runFallbackLint(ctx, project, fallback);
+}
+
+const LintFallback = struct {
+    label: []const u8,
+    command_prefix: []const []const u8,
+};
+
+fn detectLintFallback(allocator: std.mem.Allocator) ?LintFallback {
+    if (core.exec.commandExists(allocator, "clang++")) {
+        return .{
+            .label = "clang++",
+            .command_prefix = &.{"clang++"},
+        };
+    }
+    if (core.exec.commandExists(allocator, "g++")) {
+        return .{
+            .label = "g++",
+            .command_prefix = &.{"g++"},
+        };
+    }
+    if (core.exec.commandExists(allocator, "zig")) {
+        return .{
+            .label = "zig c++",
+            .command_prefix = &.{ "zig", "c++" },
+        };
+    }
+    return null;
+}
+
+fn runClangTidyLint(ctx: *Context, project: project_mod.Project) !u8 {
     var any = false;
     for (project.targets) |target| {
         for (target.sources) |pattern| {
             const sources = try build.orchestrator.resolveSourcePattern(ctx.allocator, pattern);
             for (sources) |source| {
-                const code = try core.exec.runInherit(ctx.allocator, &.{ "clang-tidy", source, "--", "-std=c++20" });
+                var argv: std.ArrayList([]const u8) = .empty;
+                defer argv.deinit(ctx.allocator);
+                try argv.append(ctx.allocator, "clang-tidy");
+                try argv.append(ctx.allocator, source);
+                try argv.append(ctx.allocator, "--");
+                try appendLintCompilerArgs(
+                    ctx.allocator,
+                    &argv,
+                    project.defaults.cpp_standard,
+                    target.include_dirs,
+                    target.defines,
+                    target.cflags,
+                );
+
+                const code = try core.exec.runInherit(ctx.allocator, argv.items);
                 if (code != 0) return code;
                 any = true;
             }
@@ -271,6 +352,77 @@ pub fn handleLint(ctx: *Context, _: []const []const u8) !u8 {
         try ctx.print("lint: linted project sources\n", .{});
     }
     return 0;
+}
+
+fn runFallbackLint(ctx: *Context, project: project_mod.Project, fallback: LintFallback) !u8 {
+    var any = false;
+    for (project.targets) |target| {
+        for (target.sources) |pattern| {
+            const sources = try build.orchestrator.resolveSourcePattern(ctx.allocator, pattern);
+            for (sources) |source| {
+                var argv: std.ArrayList([]const u8) = .empty;
+                defer argv.deinit(ctx.allocator);
+
+                for (fallback.command_prefix) |arg| {
+                    try argv.append(ctx.allocator, arg);
+                }
+                try argv.append(ctx.allocator, "-fsyntax-only");
+                try appendLintCompilerArgs(
+                    ctx.allocator,
+                    &argv,
+                    project.defaults.cpp_standard,
+                    target.include_dirs,
+                    target.defines,
+                    target.cflags,
+                );
+                try argv.append(ctx.allocator, source);
+
+                const code = try core.exec.runInherit(ctx.allocator, argv.items);
+                if (code != 0) return code;
+                any = true;
+            }
+        }
+    }
+    if (!any) {
+        try ctx.print("lint: no source files found\n", .{});
+    } else {
+        try ctx.print("lint: linted project sources (fallback)\n", .{});
+    }
+    return 0;
+}
+
+fn appendLintCompilerArgs(
+    allocator: std.mem.Allocator,
+    argv: *std.ArrayList([]const u8),
+    standard: project_mod.CppStandard,
+    include_dirs: []const []const u8,
+    defines: []const []const u8,
+    cflags: []const []const u8,
+) !void {
+    try argv.append(allocator, lintStandardFlag(standard));
+    for (include_dirs) |include_dir| {
+        try argv.append(allocator, try std.fmt.allocPrint(allocator, "-I{s}", .{include_dir}));
+    }
+    for (defines) |define| {
+        try argv.append(allocator, try std.fmt.allocPrint(allocator, "-D{s}", .{define}));
+    }
+    for (cflags) |flag| {
+        try argv.append(allocator, flag);
+    }
+}
+
+fn lintStandardFlag(standard: project_mod.CppStandard) []const u8 {
+    return switch (standard) {
+        .c89 => "-std=c89",
+        .c99 => "-std=c99",
+        .c11 => "-std=c11",
+        .c17 => "-std=c17",
+        .cpp11 => "-std=c++11",
+        .cpp14 => "-std=c++14",
+        .cpp17 => "-std=c++17",
+        .cpp20 => "-std=c++20",
+        .cpp23 => "-std=c++23",
+    };
 }
 
 pub fn handleInfo(ctx: *Context, _: []const []const u8) !u8 {
@@ -296,6 +448,28 @@ pub fn handleInfo(ctx: *Context, _: []const []const u8) !u8 {
             try ctx.print("  - {s}@{s}\n", .{ dep.name, dep.version });
         }
     }
+    return 0;
+}
+
+pub fn handleTree(ctx: *Context, command_args: []const []const u8) !u8 {
+    var format: graph.renderer.TreeFormat = .ascii;
+    var target_filter: ?[]const u8 = null;
+
+    for (command_args) |arg| {
+        if (std.mem.startsWith(u8, arg, "--format=")) {
+            const value = arg["--format=".len..];
+            format = graph.renderer.parseTreeFormat(value) orelse {
+                try ctx.printErr("error: unsupported tree format '{s}'\n", .{value});
+                return 2;
+            };
+        } else if (std.mem.startsWith(u8, arg, "--target=")) {
+            target_filter = arg["--target=".len..];
+        }
+    }
+
+    const project = try build.orchestrator.loadProject(ctx.allocator);
+    const output = try graph.renderer.renderTree(ctx.allocator, project, format, target_filter);
+    try ctx.print("{s}", .{output});
     return 0;
 }
 

@@ -33,7 +33,7 @@ pub const commands = [_]CommandSpec{
     .{
         .name = "build",
         .summary = "Build the project",
-        .usage = "ovo build [target]",
+        .usage = "ovo build [--force] [target]",
         .group = .basic,
         .examples = &.{"ovo build"},
     },
@@ -144,6 +144,17 @@ pub const commands = [_]CommandSpec{
         .usage = "ovo info",
         .group = .tooling,
         .examples = &.{"ovo info"},
+    },
+    .{
+        .name = "tree",
+        .summary = "Visualize the build graph",
+        .usage = "ovo tree [--format=ascii|dot|json|mermaid] [--target=name]",
+        .group = .tooling,
+        .examples = &.{
+            "ovo tree",
+            "ovo tree --format=dot",
+            "ovo tree --target=mylib",
+        },
     },
     .{
         .name = "import",

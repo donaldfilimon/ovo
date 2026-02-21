@@ -26,6 +26,7 @@ const CommandId = enum {
     fmt,
     lint,
     info,
+    tree,
     import_cmd,
     export_cmd,
 };
@@ -54,6 +55,7 @@ const command_handlers = [_]CommandHandler{
     .{ .name = "fmt", .id = .fmt },
     .{ .name = "lint", .id = .lint },
     .{ .name = "info", .id = .info },
+    .{ .name = "tree", .id = .tree },
     .{ .name = "import", .id = .import_cmd },
     .{ .name = "export", .id = .export_cmd },
 };
@@ -195,6 +197,7 @@ fn dispatchCommand(
         .fmt => handlers.handleFmt(ctx, command_args),
         .lint => handlers.handleLint(ctx, command_args),
         .info => handlers.handleInfo(ctx, command_args),
+        .tree => handlers.handleTree(ctx, command_args),
         .import_cmd => handlers.handleImport(ctx, command_args),
         .export_cmd => handlers.handleExport(ctx, command_args),
     };

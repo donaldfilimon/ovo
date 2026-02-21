@@ -46,6 +46,8 @@ fn parseTargets(allocator: std.mem.Allocator, bytes: []const u8) ![]const projec
         target.sources = try parseStringArray(allocator, entry.body, ".sources");
         target.include_dirs = try parseStringArray(allocator, entry.body, ".include_dirs");
         target.link_libraries = try parseStringArray(allocator, entry.body, ".link");
+        target.defines = try parseStringArray(allocator, entry.body, ".defines");
+        target.cflags = try parseStringArray(allocator, entry.body, ".cflags");
         try targets.append(allocator, target);
     }
 

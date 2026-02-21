@@ -4,7 +4,7 @@ ZON-based package manager and build system for C/C++, designed as a modern repla
 
 ## Requirements
 
-- Zig `0.16.0` or newer (baseline: `0.16.0-dev.2535+b5bd49460`)
+- Zig `0.16.0` or newer (baseline: `0.16.0-dev.2623+27eec9bd6`)
 - Project-managed toolchain (`~/.zvm/bin/zig`) for local parity
 
 ## Quick Start
@@ -15,6 +15,13 @@ cd myapp
 ovo build
 ovo run
 ovo test
+```
+
+From a source checkout of this repository, you can run the local launcher directly:
+
+```bash
+./ovo --help
+./ovo build
 ```
 
 ## Build Steps
@@ -60,6 +67,7 @@ zig build test-all
 - `ovo fmt`
 - `ovo lint`
 - `ovo info`
+- `ovo tree [--format=ascii|dot|json|mermaid] [--target=name]`
 
 ### Translation
 
@@ -84,6 +92,7 @@ zig build test-all
 - `src/compiler/` backend abstraction (Clang/GCC/MSVC/Zig CC)
 - `src/package/` dependency management and lockflow operations
 - `src/translate/` import/export format adapters
+- `src/graph/` build graph visualization (`tree` command)
 - `src/cli/` CLI parser, registry, help, dispatch, and handlers
 - `src/neural/` legacy neural utilities
 

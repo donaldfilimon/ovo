@@ -25,6 +25,8 @@ pub const Target = struct {
     sources: []const []const u8 = &.{},
     include_dirs: []const []const u8 = &.{},
     link_libraries: []const []const u8 = &.{},
+    defines: []const []const u8 = &.{},
+    cflags: []const []const u8 = &.{},
 };
 
 pub const Dependency = struct {

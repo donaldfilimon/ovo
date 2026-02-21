@@ -4,6 +4,7 @@ const project_mod = @import("../core/project.zig");
 const zon = @import("../zon/mod.zig");
 
 const CMakeParseError = anyerror;
+const MesonParseError = anyerror;
 
 pub const ImportFormat = enum {
     cmake,
@@ -75,6 +76,8 @@ const CMakeTarget = struct {
     sources: std.ArrayList([]const u8),
     include_dirs: std.ArrayList([]const u8),
     link_libraries: std.ArrayList([]const u8),
+    defines: std.ArrayList([]const u8),
+    cflags: std.ArrayList([]const u8),
 };
 
 const CMakeParseContext = struct {
@@ -85,6 +88,54 @@ const CMakeParseContext = struct {
     parsed_project_name: *[]const u8,
     cpp_standard: *project_mod.CppStandard,
     visited_paths: *std.ArrayList([]const u8),
+    dependencies: *std.ArrayList(project_mod.Dependency),
+};
+
+// ── Meson importer types ──────────────────────────────
+
+const MesonKeyword = struct {
+    key: []const u8,
+    value: MesonValue,
+};
+
+const MesonValue = union(enum) {
+    string: []const u8,
+    array: []const []const u8,
+    boolean: bool,
+};
+
+const MesonVariable = struct {
+    name: []const u8,
+    value: MesonValue,
+};
+
+const MesonTarget = struct {
+    name: []const u8,
+    kind: project_mod.TargetType,
+    sources: std.ArrayList([]const u8),
+    include_dirs: std.ArrayList([]const u8),
+    link_libraries: std.ArrayList([]const u8),
+};
+
+const MesonParseContext = struct {
+    allocator: std.mem.Allocator,
+    target_data: *std.ArrayList(MesonTarget),
+    global_include_dirs: *std.ArrayList([]const u8),
+    variables: *std.ArrayList(MesonVariable),
+    dependencies: *std.ArrayList(project_mod.Dependency),
+    parsed_project_name: *[]const u8,
+    parsed_version: *[]const u8,
+    cpp_standard: *project_mod.CppStandard,
+    visited_paths: *std.ArrayList([]const u8),
+};
+
+// ── Makefile importer types ───────────────────────────
+
+const MakefileTarget = struct {
+    name: []const u8,
+    sources: std.ArrayList([]const u8),
+    is_library: bool,
+    is_shared: bool,
 };
 
 fn importCMake(allocator: std.mem.Allocator, source_path: []const u8) !project_mod.Project {
@@ -94,6 +145,7 @@ fn importCMake(allocator: std.mem.Allocator, source_path: []const u8) !project_m
     var parsed_project_name = project_mod.guessProjectNameFromPath(source_path);
     var cpp_standard = project_mod.CppStandard.cpp20;
     var visited_paths: std.ArrayList([]const u8) = .empty;
+    var dependencies: std.ArrayList(project_mod.Dependency) = .empty;
 
     const root_path = if (std.mem.eql(u8, source_path, "."))
         try allocator.dupe(u8, "CMakeLists.txt")
@@ -117,6 +169,7 @@ fn importCMake(allocator: std.mem.Allocator, source_path: []const u8) !project_m
         .parsed_project_name = &parsed_project_name,
         .cpp_standard = &cpp_standard,
         .visited_paths = &visited_paths,
+        .dependencies = &dependencies,
     };
 
     try importCMakeFromPath(allocator, source_path, true, &context);
@@ -132,6 +185,8 @@ fn importCMake(allocator: std.mem.Allocator, source_path: []const u8) !project_m
             .sources = sources,
             .include_dirs = includes,
             .link_libraries = .empty,
+            .defines = .empty,
+            .cflags = .empty,
         });
     }
 
@@ -148,12 +203,22 @@ fn importCMake(allocator: std.mem.Allocator, source_path: []const u8) !project_m
             target.include_dirs.items,
         );
         const links = try target.link_libraries.toOwnedSlice(allocator);
+        const defs = if (target.defines.items.len > 0)
+            try target.defines.toOwnedSlice(allocator)
+        else
+            @as([]const []const u8, &.{});
+        const flags = if (target.cflags.items.len > 0)
+            try target.cflags.toOwnedSlice(allocator)
+        else
+            @as([]const []const u8, &.{});
         rendered_targets[target_index] = .{
             .name = target.name,
             .kind = target.kind,
             .sources = target_sources,
             .include_dirs = merged_includes,
             .link_libraries = links,
+            .defines = defs,
+            .cflags = flags,
         };
     }
 
@@ -163,6 +228,10 @@ fn importCMake(allocator: std.mem.Allocator, source_path: []const u8) !project_m
         .license = "MIT",
         .defaults = .{ .cpp_standard = cpp_standard },
         .targets = rendered_targets,
+        .dependencies = if (dependencies.items.len > 0)
+            try dependencies.toOwnedSlice(allocator)
+        else
+            &.{},
     };
 }
 
@@ -279,7 +348,99 @@ fn parseCMakeBuffer(
             try parseTargetLinkLibrariesCommand(allocator, args.items, context.target_data);
             continue;
         }
+
+        if (std.ascii.eqlIgnoreCase(command.name, "target_compile_definitions")) {
+            try parseTargetCompileDefinitionsCommand(allocator, args.items, context.target_data);
+            continue;
+        }
+
+        if (std.ascii.eqlIgnoreCase(command.name, "target_compile_options")) {
+            try parseTargetCompileOptionsCommand(allocator, args.items, context.target_data);
+            continue;
+        }
+
+        if (std.ascii.eqlIgnoreCase(command.name, "find_package")) {
+            try parseFindPackageCommand(allocator, args.items, context.dependencies);
+            continue;
+        }
+
+        if (std.ascii.eqlIgnoreCase(command.name, "list")) {
+            try parseListCommand(allocator, args.items, context.variable_values);
+            continue;
+        }
+
+        if (std.ascii.eqlIgnoreCase(command.name, "option")) {
+            try parseOptionCommand(allocator, args.items, context.variable_values);
+            continue;
+        }
     }
+}
+
+fn parseFindPackageCommand(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    dependencies: *std.ArrayList(project_mod.Dependency),
+) !void {
+    if (args.len == 0) return;
+    const pkg_name = args[0];
+    if (pkg_name.len == 0 or pkg_name[0] == '$') return;
+    // Skip CMake built-in packages
+    if (std.ascii.eqlIgnoreCase(pkg_name, "Threads") or
+        std.ascii.eqlIgnoreCase(pkg_name, "PkgConfig"))
+        return;
+
+    // Check for duplicate
+    for (dependencies.items) |existing| {
+        if (std.mem.eql(u8, existing.name, pkg_name)) return;
+    }
+
+    // Try to extract version from args (find_package(Foo 1.2.3 REQUIRED))
+    var version: []const u8 = "latest";
+    if (args.len > 1) {
+        const second = args[1];
+        if (second.len > 0 and std.ascii.isDigit(second[0])) {
+            version = second;
+        }
+    }
+
+    try dependencies.append(allocator, .{ .name = pkg_name, .version = version });
+}
+
+fn parseListCommand(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    variables: *std.ArrayList(CMakeVariable),
+) !void {
+    if (args.len < 3) return;
+    if (std.ascii.eqlIgnoreCase(args[0], "APPEND")) {
+        const var_name = args[1];
+        const values = args[2..];
+        // Get existing variable values
+        if (findVariable(variables, var_name)) |existing| {
+            var new_values: std.ArrayList([]const u8) = .empty;
+            for (existing.values) |v| {
+                try new_values.append(allocator, try allocator.dupe(u8, v));
+            }
+            for (values) |v| {
+                try new_values.append(allocator, try allocator.dupe(u8, v));
+            }
+            try setVariable(allocator, variables, var_name, try new_values.toOwnedSlice(allocator));
+        } else {
+            try setVariable(allocator, variables, var_name, values);
+        }
+    }
+}
+
+fn parseOptionCommand(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    variables: *std.ArrayList(CMakeVariable),
+) !void {
+    // option(NAME "description" DEFAULT)
+    if (args.len < 1) return;
+    const var_name = args[0];
+    const default_val = if (args.len >= 3) args[2] else "OFF";
+    try setVariable(allocator, variables, var_name, &.{default_val});
 }
 
 fn parseAddSubdirectoryCommand(
@@ -337,8 +498,7 @@ fn parseCMakeFile(
     defer allocator.free(bytes);
 
     const source_dir = if (std.fs.path.dirname(file_path)) |dir| dir else ".";
-    const source_buffer: []const u8 = bytes;
-    try parseCMakeBuffer(allocator, source_dir, source_buffer, context, false);
+    try parseCMakeBuffer(allocator, source_dir, bytes, context, false);
 }
 
 fn isVisited(visited: *std.ArrayList([]const u8), candidate: []const u8) bool {
@@ -362,15 +522,148 @@ fn importMakefile(allocator: std.mem.Allocator, source_path: []const u8) !projec
     if (!core.fs.fileExists(path)) return error.MakefileNotFound;
     const makefile = try core.fs.readFileAlloc(allocator, path);
 
+    // First pass: collect variable assignments
+    var make_vars: std.ArrayList(MakeVariable) = .empty;
+    var global_include_dirs: std.ArrayList([]const u8) = .empty;
+    var make_targets: std.ArrayList(MakefileTarget) = .empty;
+
+    var lines = std.mem.tokenizeAny(u8, makefile, "\r\n");
+    var current_target_idx: ?usize = null;
+
+    while (lines.next()) |line_raw| {
+        const line = std.mem.trim(u8, line_raw, "\r");
+        if (line.len == 0) {
+            current_target_idx = null;
+            continue;
+        }
+
+        // Comment
+        if (line[0] == '#') continue;
+
+        // Recipe line (starts with tab) — analyze for library detection and sources
+        if (line[0] == '\t' and current_target_idx != null) {
+            const recipe = std.mem.trim(u8, line, " \t");
+            const idx = current_target_idx.?;
+            // Detect static library (ar command)
+            if (std.mem.indexOf(u8, recipe, "ar ") != null or
+                std.mem.indexOf(u8, recipe, "$(AR)") != null)
+            {
+                make_targets.items[idx].is_library = true;
+                make_targets.items[idx].is_shared = false;
+            }
+            // Detect shared library (-shared flag)
+            if (std.mem.indexOf(u8, recipe, "-shared") != null) {
+                make_targets.items[idx].is_library = true;
+                make_targets.items[idx].is_shared = true;
+            }
+            // Extract source files from recipe
+            try extractMakeSourcesFromLine(allocator, recipe, &make_targets.items[idx].sources);
+            continue;
+        }
+
+        // Variable assignment: NAME = value, NAME := value, NAME ?= value, NAME += value
+        if (parseMakeVariableAssignment(line)) |assignment| {
+            try handleMakeVariable(allocator, &make_vars, &global_include_dirs, assignment);
+            current_target_idx = null;
+            continue;
+        }
+
+        // Target rule: name: dependencies
+        if (parseMakeTargetRule(line)) |rule| {
+            // Skip special targets
+            if (rule.name[0] == '.' or
+                std.mem.eql(u8, rule.name, "all") or
+                std.mem.eql(u8, rule.name, "clean") or
+                std.mem.eql(u8, rule.name, "install") or
+                std.mem.eql(u8, rule.name, "uninstall") or
+                std.mem.eql(u8, rule.name, "test") or
+                std.mem.eql(u8, rule.name, "check") or
+                std.mem.eql(u8, rule.name, "dist") or
+                std.mem.eql(u8, rule.name, "distclean"))
+            {
+                current_target_idx = null;
+                continue;
+            }
+
+            try make_targets.append(allocator, .{
+                .name = rule.name,
+                .sources = .empty,
+                .is_library = false,
+                .is_shared = false,
+            });
+            current_target_idx = make_targets.items.len - 1;
+
+            // Extract source files from dependencies
+            try extractMakeSourcesFromLine(allocator, rule.deps, &make_targets.items[current_target_idx.?].sources);
+            continue;
+        }
+
+        current_target_idx = null;
+    }
+
+    // Try to expand SOURCES variable into targets that have no sources
+    const sources_var = findMakeVariable(&make_vars, "SOURCES") orelse
+        findMakeVariable(&make_vars, "SRCS") orelse
+        findMakeVariable(&make_vars, "SRC");
+
+    if (make_targets.items.len > 0) {
+        // Build Project from parsed targets
+        const rendered_targets = try allocator.alloc(project_mod.Target, make_targets.items.len);
+        for (make_targets.items, 0..) |*mt, idx| {
+            // If target has no sources, try the SOURCES variable
+            if (mt.sources.items.len == 0) {
+                if (sources_var) |sv| {
+                    try extractMakeSourcesFromLine(allocator, sv, &mt.sources);
+                }
+            }
+            if (mt.sources.items.len == 0) {
+                try mt.sources.append(allocator, "src/main.cpp");
+            }
+
+            const kind: project_mod.TargetType = if (mt.is_library and mt.is_shared)
+                .library_shared
+            else if (mt.is_library)
+                .library_static
+            else
+                .executable;
+
+            rendered_targets[idx] = .{
+                .name = mt.name,
+                .kind = kind,
+                .sources = try mt.sources.toOwnedSlice(allocator),
+                .include_dirs = if (global_include_dirs.items.len > 0)
+                    try global_include_dirs.toOwnedSlice(allocator)
+                else
+                    &.{},
+            };
+        }
+
+        const inferred_name = if (make_targets.items.len > 0) make_targets.items[0].name else project_mod.guessProjectNameFromPath(source_path);
+        return .{
+            .name = inferred_name,
+            .version = "0.1.0",
+            .license = "MIT",
+            .targets = rendered_targets,
+        };
+    }
+
+    // Fallback: naive .cpp scanning (original behavior)
     var source_list: std.ArrayList([]const u8) = .empty;
     errdefer source_list.deinit(allocator);
-    var lines = std.mem.tokenizeAny(u8, makefile, "\r\n");
-    while (lines.next()) |line| {
-        if (std.mem.indexOf(u8, line, ".cpp")) |idx| {
-            const start = backwardTokenBoundary(line, idx);
-            const end = forwardTokenBoundary(line, idx + 4);
-            const candidate = std.mem.trim(u8, line[start..end], " \t\\");
-            if (candidate.len > 0) try source_list.append(allocator, candidate);
+
+    if (sources_var) |sv| {
+        try extractMakeSourcesFromLine(allocator, sv, &source_list);
+    }
+
+    if (source_list.items.len == 0) {
+        var scan_lines = std.mem.tokenizeAny(u8, makefile, "\r\n");
+        while (scan_lines.next()) |scan_line| {
+            if (std.mem.indexOf(u8, scan_line, ".cpp")) |idx| {
+                const s = backwardTokenBoundary(scan_line, idx);
+                const e = forwardTokenBoundary(scan_line, idx + 4);
+                const candidate = std.mem.trim(u8, scan_line[s..e], " \t\\");
+                if (candidate.len > 0) try source_list.append(allocator, candidate);
+            }
         }
     }
     if (source_list.items.len == 0) try source_list.append(allocator, "src/main.cpp");
@@ -381,7 +674,10 @@ fn importMakefile(allocator: std.mem.Allocator, source_path: []const u8) !projec
         .name = inferred_name,
         .kind = .executable,
         .sources = try source_list.toOwnedSlice(allocator),
-        .include_dirs = &.{"include"},
+        .include_dirs = if (global_include_dirs.items.len > 0)
+            try global_include_dirs.toOwnedSlice(allocator)
+        else
+            &.{"include"},
     };
 
     return .{
@@ -392,21 +688,889 @@ fn importMakefile(allocator: std.mem.Allocator, source_path: []const u8) !projec
     };
 }
 
+const MakeVariable = struct {
+    name: []const u8,
+    value: []const u8,
+};
+
+const MakeAssignment = struct {
+    name: []const u8,
+    value: []const u8,
+    is_append: bool,
+};
+
+const MakeRule = struct {
+    name: []const u8,
+    deps: []const u8,
+};
+
+fn parseMakeVariableAssignment(line: []const u8) ?MakeAssignment {
+    // Look for =, :=, ?=, += at top level
+    var i: usize = 0;
+    // Name must start with alphanum or _
+    if (line.len == 0) return null;
+    if (line[0] == '\t') return null; // recipe line
+    if (!std.ascii.isAlphanumeric(line[0]) and line[0] != '_') return null;
+
+    while (i < line.len) {
+        const c = line[i];
+        if (c == ':' and i + 1 < line.len and line[i + 1] == '=') {
+            return .{
+                .name = std.mem.trim(u8, line[0..i], " \t"),
+                .value = std.mem.trim(u8, line[i + 2 ..], " \t"),
+                .is_append = false,
+            };
+        }
+        if (c == '+' and i + 1 < line.len and line[i + 1] == '=') {
+            return .{
+                .name = std.mem.trim(u8, line[0..i], " \t"),
+                .value = std.mem.trim(u8, line[i + 2 ..], " \t"),
+                .is_append = true,
+            };
+        }
+        if (c == '?' and i + 1 < line.len and line[i + 1] == '=') {
+            return .{
+                .name = std.mem.trim(u8, line[0..i], " \t"),
+                .value = std.mem.trim(u8, line[i + 2 ..], " \t"),
+                .is_append = false,
+            };
+        }
+        if (c == '=' and (i == 0 or line[i - 1] != ':' and line[i - 1] != '?' and line[i - 1] != '+' and line[i - 1] != '!')) {
+            return .{
+                .name = std.mem.trim(u8, line[0..i], " \t"),
+                .value = std.mem.trim(u8, line[i + 1 ..], " \t"),
+                .is_append = false,
+            };
+        }
+        // Stop if we hit ':' without '=' (it's a target rule)
+        if (c == ':' and (i + 1 >= line.len or line[i + 1] != '=')) return null;
+        i += 1;
+    }
+    return null;
+}
+
+fn parseMakeTargetRule(line: []const u8) ?MakeRule {
+    if (line.len == 0 or line[0] == '\t' or line[0] == '#') return null;
+    // Find ':' that's not ':='
+    var i: usize = 0;
+    while (i < line.len) {
+        if (line[i] == ':') {
+            if (i + 1 < line.len and line[i + 1] == '=') return null; // variable assignment
+            const name = std.mem.trim(u8, line[0..i], " \t");
+            if (name.len == 0) return null;
+            const deps = if (i + 1 < line.len) std.mem.trim(u8, line[i + 1 ..], " \t") else "";
+            return .{ .name = name, .deps = deps };
+        }
+        if (line[i] == '=' or line[i] == '+' or line[i] == '?') return null;
+        i += 1;
+    }
+    return null;
+}
+
+fn handleMakeVariable(
+    allocator: std.mem.Allocator,
+    vars: *std.ArrayList(MakeVariable),
+    include_dirs: *std.ArrayList([]const u8),
+    assignment: MakeAssignment,
+) !void {
+    // Store variable
+    if (assignment.is_append) {
+        for (vars.items) |*existing| {
+            if (std.mem.eql(u8, existing.name, assignment.name)) {
+                // Concatenate
+                existing.value = try std.fmt.allocPrint(allocator, "{s} {s}", .{ existing.value, assignment.value });
+                break;
+            }
+        }
+    } else {
+        var found = false;
+        for (vars.items) |*existing| {
+            if (std.mem.eql(u8, existing.name, assignment.name)) {
+                existing.value = assignment.value;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            try vars.append(allocator, .{ .name = assignment.name, .value = assignment.value });
+        }
+    }
+
+    // Extract -I flags from CXXFLAGS, CFLAGS, INCLUDES, CPPFLAGS
+    if (std.mem.eql(u8, assignment.name, "CXXFLAGS") or
+        std.mem.eql(u8, assignment.name, "CFLAGS") or
+        std.mem.eql(u8, assignment.name, "INCLUDES") or
+        std.mem.eql(u8, assignment.name, "CPPFLAGS"))
+    {
+        try extractIncludeDirsFromFlags(allocator, assignment.value, include_dirs);
+    }
+}
+
+fn extractIncludeDirsFromFlags(
+    allocator: std.mem.Allocator,
+    flags: []const u8,
+    dirs: *std.ArrayList([]const u8),
+) !void {
+    var parts = std.mem.tokenizeAny(u8, flags, " \t");
+    while (parts.next()) |part| {
+        if (std.mem.startsWith(u8, part, "-I")) {
+            const dir = part[2..];
+            if (dir.len > 0) {
+                try dirs.append(allocator, dir);
+            } else {
+                // -I <dir> (space separated)
+                if (parts.next()) |next| {
+                    try dirs.append(allocator, next);
+                }
+            }
+        }
+    }
+}
+
+fn extractMakeSourcesFromLine(
+    allocator: std.mem.Allocator,
+    line: []const u8,
+    sources: *std.ArrayList([]const u8),
+) !void {
+    var tokens = std.mem.tokenizeAny(u8, line, " \t\\");
+    while (tokens.next()) |token| {
+        if (token.len == 0) continue;
+        if (token[0] == '$' or token[0] == '-' or token[0] == '#') continue;
+        if (isMakeSourceFile(token)) {
+            try sources.append(allocator, token);
+        }
+    }
+}
+
+fn isMakeSourceFile(token: []const u8) bool {
+    const ext = std.fs.path.extension(token);
+    return std.mem.eql(u8, ext, ".cpp") or
+        std.mem.eql(u8, ext, ".cc") or
+        std.mem.eql(u8, ext, ".cxx") or
+        std.mem.eql(u8, ext, ".c") or
+        std.mem.eql(u8, ext, ".C");
+}
+
+fn findMakeVariable(vars: *std.ArrayList(MakeVariable), name: []const u8) ?[]const u8 {
+    for (vars.items) |v| {
+        if (std.mem.eql(u8, v.name, name)) return v.value;
+    }
+    return null;
+}
+
 fn importMeson(allocator: std.mem.Allocator, source_path: []const u8) !project_mod.Project {
-    const inferred_name = project_mod.guessProjectNameFromPath(source_path);
-    var targets = try allocator.alloc(project_mod.Target, 1);
-    targets[0] = .{
-        .name = inferred_name,
-        .kind = .executable,
-        .sources = &.{"src/main.cpp"},
-        .include_dirs = &.{"include"},
+    var target_data: std.ArrayList(MesonTarget) = .empty;
+    var global_include_dirs: std.ArrayList([]const u8) = .empty;
+    var variables: std.ArrayList(MesonVariable) = .empty;
+    var dependencies: std.ArrayList(project_mod.Dependency) = .empty;
+    var parsed_project_name = project_mod.guessProjectNameFromPath(source_path);
+    var parsed_version: []const u8 = "0.1.0";
+    var cpp_standard = project_mod.CppStandard.cpp20;
+    var visited_paths: std.ArrayList([]const u8) = .empty;
+
+    var context = MesonParseContext{
+        .allocator = allocator,
+        .target_data = &target_data,
+        .global_include_dirs = &global_include_dirs,
+        .variables = &variables,
+        .dependencies = &dependencies,
+        .parsed_project_name = &parsed_project_name,
+        .parsed_version = &parsed_version,
+        .cpp_standard = &cpp_standard,
+        .visited_paths = &visited_paths,
     };
+
+    try importMesonFromPath(allocator, source_path, &context);
+
+    if (target_data.items.len == 0) {
+        var sources: std.ArrayList([]const u8) = .empty;
+        var includes: std.ArrayList([]const u8) = .empty;
+        try sources.append(allocator, "src/main.cpp");
+        try includes.append(allocator, "include");
+        try target_data.append(allocator, .{
+            .name = parsed_project_name,
+            .kind = .executable,
+            .sources = sources,
+            .include_dirs = includes,
+            .link_libraries = .empty,
+        });
+    }
+
+    const rendered_targets = try allocator.alloc(project_mod.Target, target_data.items.len);
+    for (target_data.items, 0..) |_, target_index| {
+        var target = &target_data.items[target_index];
+        const target_sources = if (target.sources.items.len > 0)
+            try target.sources.toOwnedSlice(allocator)
+        else
+            try allocator.dupe([]const u8, &[_][]const u8{});
+        const merged_includes = try mergeIncludeDirs(
+            allocator,
+            global_include_dirs.items,
+            target.include_dirs.items,
+        );
+        const links = try target.link_libraries.toOwnedSlice(allocator);
+        rendered_targets[target_index] = .{
+            .name = target.name,
+            .kind = target.kind,
+            .sources = target_sources,
+            .include_dirs = merged_includes,
+            .link_libraries = links,
+            .defines = &.{},
+            .cflags = &.{},
+        };
+    }
+
     return .{
-        .name = inferred_name,
-        .version = "0.1.0",
+        .name = parsed_project_name,
+        .version = parsed_version,
         .license = "MIT",
-        .targets = targets,
+        .defaults = .{ .cpp_standard = cpp_standard },
+        .targets = rendered_targets,
+        .dependencies = if (dependencies.items.len > 0)
+            try dependencies.toOwnedSlice(allocator)
+        else
+            &.{},
     };
+}
+
+fn importMesonFromPath(
+    allocator: std.mem.Allocator,
+    source_path: []const u8,
+    context: *MesonParseContext,
+) MesonParseError!void {
+    const path = if (std.mem.eql(u8, source_path, "."))
+        try allocator.dupe(u8, "meson.build")
+    else
+        try std.fmt.allocPrint(allocator, "{s}/meson.build", .{source_path});
+    defer allocator.free(path);
+
+    if (!core.fs.fileExists(path)) return;
+    if (isVisited(context.visited_paths, path)) return;
+    const visited_path = try allocator.dupe(u8, path);
+    try context.visited_paths.append(allocator, visited_path);
+
+    const bytes = core.fs.readFileAlloc(allocator, path) catch |err| {
+        return if (err == error.OutOfMemory) err else {};
+    };
+    defer allocator.free(bytes);
+
+    try parseMesonBuffer(allocator, source_path, bytes, context);
+}
+
+fn parseMesonBuffer(
+    allocator: std.mem.Allocator,
+    source_path: []const u8,
+    bytes: []const u8,
+    context: *MesonParseContext,
+) MesonParseError!void {
+    const calls = try extractMesonFunctions(allocator, bytes);
+    defer allocator.free(calls);
+
+    for (calls) |call| {
+        if (std.mem.eql(u8, call.name, "project")) {
+            handleMesonProject(call, context);
+        } else if (std.mem.eql(u8, call.name, "executable")) {
+            try handleMesonTargetCall(allocator, call, .executable, context);
+        } else if (std.mem.eql(u8, call.name, "library")) {
+            try handleMesonTargetCall(allocator, call, .library_shared, context);
+        } else if (std.mem.eql(u8, call.name, "static_library")) {
+            try handleMesonTargetCall(allocator, call, .library_static, context);
+        } else if (std.mem.eql(u8, call.name, "shared_library")) {
+            try handleMesonTargetCall(allocator, call, .library_shared, context);
+        } else if (std.mem.eql(u8, call.name, "dependency")) {
+            try handleMesonDependency(allocator, call, context);
+        } else if (std.mem.eql(u8, call.name, "include_directories")) {
+            try handleMesonIncludeDirs(allocator, call, context);
+        } else if (std.mem.eql(u8, call.name, "subdir")) {
+            try handleMesonSubdir(allocator, call, source_path, context);
+        }
+    }
+
+    // Parse variable assignments (lines with = or +=)
+    try parseMesonVariableAssignments(allocator, bytes, context);
+}
+
+const MesonFunctionCall = struct {
+    name: []const u8,
+    positional: []const []const u8,
+    keywords: []const MesonKeyword,
+};
+
+fn extractMesonFunctions(allocator: std.mem.Allocator, bytes: []const u8) ![]MesonFunctionCall {
+    var calls: std.ArrayList(MesonFunctionCall) = .empty;
+    var i: usize = 0;
+
+    while (i < bytes.len) {
+        // Skip whitespace
+        while (i < bytes.len and (bytes[i] == ' ' or bytes[i] == '\t' or bytes[i] == '\r' or bytes[i] == '\n')) : (i += 1) {}
+        if (i >= bytes.len) break;
+
+        // Skip comments
+        if (bytes[i] == '#') {
+            while (i < bytes.len and bytes[i] != '\n') : (i += 1) {}
+            continue;
+        }
+
+        // Look for identifier followed by (
+        if (!std.ascii.isAlphabetic(bytes[i]) and bytes[i] != '_') {
+            i += 1;
+            continue;
+        }
+
+        const name_start = i;
+        while (i < bytes.len and (std.ascii.isAlphanumeric(bytes[i]) or bytes[i] == '_')) : (i += 1) {}
+        const name = bytes[name_start..i];
+
+        // Skip whitespace
+        while (i < bytes.len and (bytes[i] == ' ' or bytes[i] == '\t')) : (i += 1) {}
+
+        // Check for assignment (skip it here, handled separately)
+        if (i < bytes.len and (bytes[i] == '=' or (bytes[i] == '+' and i + 1 < bytes.len and bytes[i + 1] == '='))) {
+            // Skip to end of line (variable assignment handled in parseMesonVariableAssignments)
+            while (i < bytes.len and bytes[i] != '\n') : (i += 1) {}
+            continue;
+        }
+
+        if (i >= bytes.len or bytes[i] != '(') continue;
+        i += 1; // skip '('
+
+        // Extract args between ( and matching )
+        const args_start = i;
+        var depth: usize = 1;
+        var in_sq: bool = false;
+        var in_dq: bool = false;
+        while (i < bytes.len and depth > 0) {
+            const c = bytes[i];
+            if (in_sq) {
+                if (c == '\'') in_sq = false;
+                i += 1;
+                continue;
+            }
+            if (in_dq) {
+                if (c == '"') in_dq = false;
+                i += 1;
+                continue;
+            }
+            if (c == '\'') {
+                in_sq = true;
+                i += 1;
+                continue;
+            }
+            if (c == '"') {
+                in_dq = true;
+                i += 1;
+                continue;
+            }
+            if (c == '#') {
+                while (i < bytes.len and bytes[i] != '\n') : (i += 1) {}
+                continue;
+            }
+            if (c == '(') depth += 1;
+            if (c == ')') depth -= 1;
+            i += 1;
+        }
+        if (depth != 0) break;
+
+        const args_content = bytes[args_start .. i - 1];
+        const parsed = try parseMesonArguments(allocator, args_content);
+
+        try calls.append(allocator, .{
+            .name = name,
+            .positional = parsed.positional,
+            .keywords = parsed.keywords,
+        });
+    }
+
+    return try calls.toOwnedSlice(allocator);
+}
+
+const MesonParsedArgs = struct {
+    positional: []const []const u8,
+    keywords: []const MesonKeyword,
+};
+
+fn parseMesonArguments(allocator: std.mem.Allocator, input: []const u8) !MesonParsedArgs {
+    var positional: std.ArrayList([]const u8) = .empty;
+    var keywords: std.ArrayList(MesonKeyword) = .empty;
+
+    // Split on commas at the top level (respecting quotes, brackets, parens)
+    var tokens: std.ArrayList([]const u8) = .empty;
+    defer tokens.deinit(allocator);
+
+    var start: usize = 0;
+    var depth_paren: usize = 0;
+    var depth_bracket: usize = 0;
+    var in_sq: bool = false;
+    var in_dq: bool = false;
+    var ti: usize = 0;
+
+    while (ti < input.len) {
+        const c = input[ti];
+        if (in_sq) {
+            if (c == '\'') in_sq = false;
+            ti += 1;
+            continue;
+        }
+        if (in_dq) {
+            if (c == '"') in_dq = false;
+            ti += 1;
+            continue;
+        }
+        if (c == '\'') {
+            in_sq = true;
+            ti += 1;
+            continue;
+        }
+        if (c == '"') {
+            in_dq = true;
+            ti += 1;
+            continue;
+        }
+        if (c == '#') {
+            while (ti < input.len and input[ti] != '\n') : (ti += 1) {}
+            continue;
+        }
+        if (c == '(' or c == '[') {
+            if (c == '(') depth_paren += 1 else depth_bracket += 1;
+            ti += 1;
+            continue;
+        }
+        if (c == ')' or c == ']') {
+            if (c == ')') {
+                if (depth_paren > 0) depth_paren -= 1;
+            } else {
+                if (depth_bracket > 0) depth_bracket -= 1;
+            }
+            ti += 1;
+            continue;
+        }
+        if (c == ',' and depth_paren == 0 and depth_bracket == 0) {
+            const tok = std.mem.trim(u8, input[start..ti], " \t\r\n");
+            if (tok.len > 0) try tokens.append(allocator, tok);
+            start = ti + 1;
+            ti += 1;
+            continue;
+        }
+        ti += 1;
+    }
+    // Last token
+    const last = std.mem.trim(u8, input[start..input.len], " \t\r\n");
+    if (last.len > 0) try tokens.append(allocator, last);
+
+    // Classify tokens as positional or keyword
+    for (tokens.items) |token| {
+        if (findMesonKeywordColon(token)) |colon_pos| {
+            const key = std.mem.trim(u8, token[0..colon_pos], " \t\r\n");
+            const val_str = std.mem.trim(u8, token[colon_pos + 1 ..], " \t\r\n");
+            try keywords.append(allocator, .{
+                .key = key,
+                .value = try parseMesonValueExpr(allocator, val_str),
+            });
+        } else {
+            // Positional: could be a quoted string, array, or bare identifier
+            const val = try parseMesonValueExpr(allocator, token);
+            switch (val) {
+                .string => |s| try positional.append(allocator, s),
+                .array => |items| {
+                    for (items) |item| try positional.append(allocator, item);
+                },
+                .boolean => {},
+            }
+        }
+    }
+
+    return .{
+        .positional = try positional.toOwnedSlice(allocator),
+        .keywords = try keywords.toOwnedSlice(allocator),
+    };
+}
+
+fn findMesonKeywordColon(token: []const u8) ?usize {
+    // Find ':' at top level (not inside quotes or brackets)
+    var in_sq: bool = false;
+    var in_dq: bool = false;
+    var depth: usize = 0;
+    for (token, 0..) |c, idx| {
+        if (in_sq) {
+            if (c == '\'') in_sq = false;
+            continue;
+        }
+        if (in_dq) {
+            if (c == '"') in_dq = false;
+            continue;
+        }
+        if (c == '\'') {
+            in_sq = true;
+            continue;
+        }
+        if (c == '"') {
+            in_dq = true;
+            continue;
+        }
+        if (c == '[' or c == '(') {
+            depth += 1;
+            continue;
+        }
+        if (c == ']' or c == ')') {
+            if (depth > 0) depth -= 1;
+            continue;
+        }
+        if (c == ':' and depth == 0) return idx;
+    }
+    return null;
+}
+
+fn parseMesonValueExpr(allocator: std.mem.Allocator, val: []const u8) !MesonValue {
+    const trimmed = std.mem.trim(u8, val, " \t\r\n");
+    if (trimmed.len == 0) return .{ .string = "" };
+
+    // Boolean
+    if (std.mem.eql(u8, trimmed, "true")) return .{ .boolean = true };
+    if (std.mem.eql(u8, trimmed, "false")) return .{ .boolean = false };
+
+    // Quoted string (single or double)
+    if ((trimmed[0] == '\'' or trimmed[0] == '"') and trimmed.len >= 2) {
+        const quote = trimmed[0];
+        if (trimmed[trimmed.len - 1] == quote) {
+            return .{ .string = trimmed[1 .. trimmed.len - 1] };
+        }
+    }
+
+    // Array literal [...]
+    if (trimmed[0] == '[' and trimmed[trimmed.len - 1] == ']') {
+        return .{ .array = try parseMesonArrayLiteral(allocator, trimmed) };
+    }
+
+    // Bare identifier (variable reference or unquoted value)
+    return .{ .string = trimmed };
+}
+
+fn parseMesonArrayLiteral(allocator: std.mem.Allocator, val: []const u8) ![]const []const u8 {
+    // Parse ['a', 'b', 'c'] — returns slices into the original buffer
+    if (val.len < 2) return &.{};
+    const inner = val[1 .. val.len - 1];
+
+    var items: std.ArrayList([]const u8) = .empty;
+    errdefer items.deinit(allocator);
+    var ai: usize = 0;
+    while (ai < inner.len) {
+        const c = inner[ai];
+        if (c == '\'' or c == '"') {
+            ai += 1;
+            const s = ai;
+            while (ai < inner.len and inner[ai] != c) : (ai += 1) {}
+            try items.append(allocator, inner[s..ai]);
+            if (ai < inner.len) ai += 1;
+        } else {
+            ai += 1;
+        }
+    }
+
+    return try items.toOwnedSlice(allocator);
+}
+
+fn handleMesonProject(call: MesonFunctionCall, context: *MesonParseContext) void {
+    if (call.positional.len > 0 and call.positional[0].len > 0) {
+        context.parsed_project_name.* = call.positional[0];
+    }
+    for (call.keywords) |kw| {
+        if (std.mem.eql(u8, kw.key, "version")) {
+            switch (kw.value) {
+                .string => |s| context.parsed_version.* = s,
+                else => {},
+            }
+        }
+        if (std.mem.eql(u8, kw.key, "default_options")) {
+            switch (kw.value) {
+                .array => |items| {
+                    for (items) |item| {
+                        if (std.mem.startsWith(u8, item, "cpp_std=")) {
+                            const std_val = item["cpp_std=".len..];
+                            if (parseCppStandardFromToken(std_val)) |standard| {
+                                context.cpp_standard.* = standard;
+                            }
+                        }
+                    }
+                },
+                .string => |s| {
+                    if (std.mem.startsWith(u8, s, "cpp_std=")) {
+                        const std_val = s["cpp_std=".len..];
+                        if (parseCppStandardFromToken(std_val)) |standard| {
+                            context.cpp_standard.* = standard;
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+}
+
+fn handleMesonTargetCall(
+    allocator: std.mem.Allocator,
+    call: MesonFunctionCall,
+    kind: project_mod.TargetType,
+    context: *MesonParseContext,
+) !void {
+    if (call.positional.len == 0) return;
+    const name = call.positional[0];
+
+    var sources: std.ArrayList([]const u8) = .empty;
+    var include_dirs: std.ArrayList([]const u8) = .empty;
+    var link_libs: std.ArrayList([]const u8) = .empty;
+
+    // Sources from positional args after name
+    if (call.positional.len > 1) {
+        for (call.positional[1..]) |src| {
+            // Check if it's a variable reference
+            if (resolveMesonVariable(context, src)) |resolved| {
+                switch (resolved) {
+                    .array => |items| {
+                        for (items) |item| try sources.append(allocator, item);
+                    },
+                    .string => |s| try sources.append(allocator, s),
+                    else => {},
+                }
+            } else {
+                try sources.append(allocator, src);
+            }
+        }
+    }
+
+    // Keyword args
+    for (call.keywords) |kw| {
+        if (std.mem.eql(u8, kw.key, "sources")) {
+            switch (kw.value) {
+                .array => |items| {
+                    for (items) |item| try sources.append(allocator, item);
+                },
+                .string => |s| {
+                    if (resolveMesonVariable(context, s)) |resolved| {
+                        switch (resolved) {
+                            .array => |items| {
+                                for (items) |item| try sources.append(allocator, item);
+                            },
+                            .string => |rs| try sources.append(allocator, rs),
+                            else => {},
+                        }
+                    } else {
+                        try sources.append(allocator, s);
+                    }
+                },
+                else => {},
+            }
+        }
+        if (std.mem.eql(u8, kw.key, "include_directories")) {
+            switch (kw.value) {
+                .array => |items| {
+                    for (items) |item| try include_dirs.append(allocator, item);
+                },
+                .string => |s| try include_dirs.append(allocator, s),
+                else => {},
+            }
+        }
+        if (std.mem.eql(u8, kw.key, "link_with") or std.mem.eql(u8, kw.key, "dependencies")) {
+            switch (kw.value) {
+                .array => |items| {
+                    for (items) |item| try link_libs.append(allocator, item);
+                },
+                .string => |s| try link_libs.append(allocator, s),
+                else => {},
+            }
+        }
+    }
+
+    try context.target_data.append(allocator, .{
+        .name = name,
+        .kind = kind,
+        .sources = sources,
+        .include_dirs = include_dirs,
+        .link_libraries = link_libs,
+    });
+}
+
+fn handleMesonDependency(
+    allocator: std.mem.Allocator,
+    call: MesonFunctionCall,
+    context: *MesonParseContext,
+) !void {
+    if (call.positional.len == 0) return;
+    const dep_name = call.positional[0];
+    var version: []const u8 = "latest";
+    for (call.keywords) |kw| {
+        if (std.mem.eql(u8, kw.key, "version")) {
+            switch (kw.value) {
+                .string => |s| version = s,
+                else => {},
+            }
+        }
+    }
+    try context.dependencies.append(allocator, .{ .name = dep_name, .version = version });
+}
+
+fn handleMesonIncludeDirs(
+    allocator: std.mem.Allocator,
+    call: MesonFunctionCall,
+    context: *MesonParseContext,
+) !void {
+    for (call.positional) |dir| {
+        try context.global_include_dirs.append(allocator, dir);
+    }
+}
+
+fn handleMesonSubdir(
+    allocator: std.mem.Allocator,
+    call: MesonFunctionCall,
+    source_path: []const u8,
+    context: *MesonParseContext,
+) MesonParseError!void {
+    if (call.positional.len == 0) return;
+    const sub_dir = call.positional[0];
+    const resolved = try resolveRelativePath(allocator, source_path, sub_dir);
+    defer allocator.free(resolved);
+    try importMesonFromPath(allocator, resolved, context);
+}
+
+fn parseMesonVariableAssignments(
+    allocator: std.mem.Allocator,
+    bytes: []const u8,
+    context: *MesonParseContext,
+) !void {
+    var lines = std.mem.tokenizeAny(u8, bytes, "\r\n");
+    while (lines.next()) |line_raw| {
+        const line = std.mem.trim(u8, line_raw, " \t");
+        if (line.len == 0 or line[0] == '#') continue;
+
+        // Skip function calls (lines containing '(' before '=')
+        const paren_pos = std.mem.indexOfScalar(u8, line, '(');
+        const eq_pos = findAssignmentOperator(line);
+        if (eq_pos == null) continue;
+        if (paren_pos != null and paren_pos.? < eq_pos.?.pos) continue;
+
+        const var_name = std.mem.trim(u8, line[0..eq_pos.?.pos], " \t");
+        if (var_name.len == 0) continue;
+        // Validate var_name is a valid identifier
+        if (!std.ascii.isAlphabetic(var_name[0]) and var_name[0] != '_') continue;
+
+        const val_start = eq_pos.?.pos + eq_pos.?.len;
+        const val_str = std.mem.trim(u8, line[val_start..], " \t");
+        const value = try parseMesonValueExpr(allocator, val_str);
+
+        if (eq_pos.?.is_append) {
+            // += : append to existing array variable
+            for (context.variables.items) |*existing| {
+                if (std.mem.eql(u8, existing.name, var_name)) {
+                    switch (existing.value) {
+                        .array => |existing_items| {
+                            switch (value) {
+                                .array => |new_items| {
+                                    // Merge arrays
+                                    var merged: std.ArrayList([]const u8) = .empty;
+                                    for (existing_items) |item| try merged.append(allocator, item);
+                                    for (new_items) |item| try merged.append(allocator, item);
+                                    existing.value = .{ .array = try merged.toOwnedSlice(allocator) };
+                                },
+                                .string => |s| {
+                                    var merged: std.ArrayList([]const u8) = .empty;
+                                    for (existing_items) |item| try merged.append(allocator, item);
+                                    try merged.append(allocator, s);
+                                    existing.value = .{ .array = try merged.toOwnedSlice(allocator) };
+                                },
+                                else => {},
+                            }
+                            return;
+                        },
+                        else => {},
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Simple assignment or new variable
+        try setMesonVariable(allocator, context.variables, var_name, value);
+    }
+}
+
+const AssignOp = struct {
+    pos: usize,
+    len: usize,
+    is_append: bool,
+};
+
+fn findAssignmentOperator(line: []const u8) ?AssignOp {
+    var in_sq = false;
+    var in_dq = false;
+    var depth: usize = 0;
+    var i: usize = 0;
+    while (i < line.len) {
+        const c = line[i];
+        if (in_sq) {
+            if (c == '\'') in_sq = false;
+            i += 1;
+            continue;
+        }
+        if (in_dq) {
+            if (c == '"') in_dq = false;
+            i += 1;
+            continue;
+        }
+        if (c == '\'') {
+            in_sq = true;
+            i += 1;
+            continue;
+        }
+        if (c == '"') {
+            in_dq = true;
+            i += 1;
+            continue;
+        }
+        if (c == '(' or c == '[') {
+            depth += 1;
+            i += 1;
+            continue;
+        }
+        if (c == ')' or c == ']') {
+            if (depth > 0) depth -= 1;
+            i += 1;
+            continue;
+        }
+        if (depth == 0 and c == '+' and i + 1 < line.len and line[i + 1] == '=') {
+            return .{ .pos = i, .len = 2, .is_append = true };
+        }
+        if (depth == 0 and c == '=' and i > 0 and line[i - 1] != '!' and line[i - 1] != '<' and line[i - 1] != '>') {
+            // Make sure next char is not '=' (comparison)
+            if (i + 1 < line.len and line[i + 1] == '=') {
+                i += 2;
+                continue;
+            }
+            return .{ .pos = i, .len = 1, .is_append = false };
+        }
+        i += 1;
+    }
+    return null;
+}
+
+fn setMesonVariable(
+    allocator: std.mem.Allocator,
+    variables: *std.ArrayList(MesonVariable),
+    name: []const u8,
+    value: MesonValue,
+) !void {
+    for (variables.items) |*entry| {
+        if (std.mem.eql(u8, entry.name, name)) {
+            entry.value = value;
+            return;
+        }
+    }
+    try variables.append(allocator, .{ .name = name, .value = value });
+}
+
+fn resolveMesonVariable(context: *MesonParseContext, name: []const u8) ?MesonValue {
+    for (context.variables.items) |entry| {
+        if (std.mem.eql(u8, entry.name, name)) return entry.value;
+    }
+    return null;
 }
 
 fn importMSBuild(allocator: std.mem.Allocator, source_path: []const u8) !project_mod.Project {
@@ -1338,6 +2502,44 @@ fn parseTargetLinkLibrariesCommand(
     }
 }
 
+fn parseTargetCompileDefinitionsCommand(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    targets: *std.ArrayList(CMakeTarget),
+) !void {
+    if (args.len < 1) return;
+    const target_name = args[0];
+    const target_index = try findOrCreateTarget(allocator, targets, target_name, .executable);
+    const target = &targets.items[target_index];
+
+    var i: usize = 1;
+    if (i < args.len and isScopeToken(args[i])) i += 1;
+    while (i < args.len) : (i += 1) {
+        const token = args[i];
+        if (isScopeToken(token)) continue;
+        if (token.len > 0) try appendSplitTokenValues(allocator, &target.defines, token);
+    }
+}
+
+fn parseTargetCompileOptionsCommand(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    targets: *std.ArrayList(CMakeTarget),
+) !void {
+    if (args.len < 1) return;
+    const target_name = args[0];
+    const target_index = try findOrCreateTarget(allocator, targets, target_name, .executable);
+    const target = &targets.items[target_index];
+
+    var i: usize = 1;
+    if (i < args.len and isScopeToken(args[i])) i += 1;
+    while (i < args.len) : (i += 1) {
+        const token = args[i];
+        if (isScopeToken(token)) continue;
+        if (token.len > 0) try appendSplitTokenValues(allocator, &target.cflags, token);
+    }
+}
+
 fn appendDirectoryList(
     allocator: std.mem.Allocator,
     target: *std.ArrayList([]const u8),
@@ -1379,6 +2581,8 @@ fn findOrCreateTarget(
         .sources = .empty,
         .include_dirs = .empty,
         .link_libraries = .empty,
+        .defines = .empty,
+        .cflags = .empty,
     });
 
     return targets.items.len - 1;
@@ -1828,4 +3032,312 @@ test "cmake variable list values split on semicolon" {
     try std.testing.expectEqual(@as(usize, 2), project.targets[0].sources.len);
     try std.testing.expectEqualStrings("src/a.cpp", project.targets[0].sources[0]);
     try std.testing.expectEqualStrings("src/b.cpp", project.targets[0].sources[1]);
+}
+
+// ── Meson import tests ──────────────────────────────────────────────
+
+test "meson import parses project name and version" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const fixture = try std.fmt.allocPrint(alloc, "build/.tmp-ovo-meson-import-proj-{d}", .{std.time.milliTimestamp()});
+    defer core.fs.removeTreeIfExists(fixture) catch {};
+
+    try core.fs.writeFile(try std.fmt.allocPrint(alloc, "{s}/meson.build", .{fixture}),
+        \\project('myapp', 'cpp', version: '2.0.0')
+    );
+
+    const project = try importMeson(alloc, fixture);
+    try std.testing.expectEqualStrings("myapp", project.name);
+    try std.testing.expectEqualStrings("2.0.0", project.version);
+}
+
+test "meson import parses executable target with sources" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const fixture = try std.fmt.allocPrint(alloc, "build/.tmp-ovo-meson-import-exe-{d}", .{std.time.milliTimestamp()});
+    defer core.fs.removeTreeIfExists(fixture) catch {};
+
+    try core.fs.writeFile(try std.fmt.allocPrint(alloc, "{s}/meson.build", .{fixture}),
+        \\project('demo', 'cpp')
+        \\executable('demo', 'src/main.cpp', 'src/util.cpp')
+    );
+
+    const project = try importMeson(alloc, fixture);
+    try std.testing.expectEqual(@as(usize, 1), project.targets.len);
+    try std.testing.expectEqualStrings("demo", project.targets[0].name);
+    try std.testing.expectEqual(project_mod.TargetType.executable, project.targets[0].kind);
+    try std.testing.expectEqual(@as(usize, 2), project.targets[0].sources.len);
+    try std.testing.expectEqualStrings("src/main.cpp", project.targets[0].sources[0]);
+    try std.testing.expectEqualStrings("src/util.cpp", project.targets[0].sources[1]);
+}
+
+test "meson import parses static_library target" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const fixture = try std.fmt.allocPrint(alloc, "build/.tmp-ovo-meson-import-static-{d}", .{std.time.milliTimestamp()});
+    defer core.fs.removeTreeIfExists(fixture) catch {};
+
+    try core.fs.writeFile(try std.fmt.allocPrint(alloc, "{s}/meson.build", .{fixture}),
+        \\project('mylib', 'cpp')
+        \\static_library('mylib', 'src/lib.cpp')
+    );
+
+    const project = try importMeson(alloc, fixture);
+    try std.testing.expectEqual(@as(usize, 1), project.targets.len);
+    try std.testing.expectEqualStrings("mylib", project.targets[0].name);
+    try std.testing.expectEqual(project_mod.TargetType.library_static, project.targets[0].kind);
+}
+
+test "meson import parses shared_library target" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const fixture = try std.fmt.allocPrint(alloc, "build/.tmp-ovo-meson-import-shared-{d}", .{std.time.milliTimestamp()});
+    defer core.fs.removeTreeIfExists(fixture) catch {};
+
+    try core.fs.writeFile(try std.fmt.allocPrint(alloc, "{s}/meson.build", .{fixture}),
+        \\project('sharedlib', 'cpp')
+        \\shared_library('sharedlib', 'src/lib.cpp')
+    );
+
+    const project = try importMeson(alloc, fixture);
+    try std.testing.expectEqual(@as(usize, 1), project.targets.len);
+    try std.testing.expectEqual(project_mod.TargetType.library_shared, project.targets[0].kind);
+}
+
+test "meson import parses dependencies" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const fixture = try std.fmt.allocPrint(alloc, "build/.tmp-ovo-meson-import-deps-{d}", .{std.time.milliTimestamp()});
+    defer core.fs.removeTreeIfExists(fixture) catch {};
+
+    try core.fs.writeFile(try std.fmt.allocPrint(alloc, "{s}/meson.build", .{fixture}),
+        \\project('app', 'cpp')
+        \\gtest = dependency('gtest', version: '1.12')
+        \\boost = dependency('boost')
+        \\executable('app', 'src/main.cpp')
+    );
+
+    const project = try importMeson(alloc, fixture);
+    try std.testing.expectEqual(@as(usize, 2), project.dependencies.len);
+    try std.testing.expectEqualStrings("gtest", project.dependencies[0].name);
+    try std.testing.expectEqualStrings("1.12", project.dependencies[0].version);
+    try std.testing.expectEqualStrings("boost", project.dependencies[1].name);
+    try std.testing.expectEqualStrings("latest", project.dependencies[1].version);
+}
+
+test "meson import detects cpp_std from default_options" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const fixture = try std.fmt.allocPrint(alloc, "build/.tmp-ovo-meson-import-std-{d}", .{std.time.milliTimestamp()});
+    defer core.fs.removeTreeIfExists(fixture) catch {};
+
+    try core.fs.writeFile(try std.fmt.allocPrint(alloc, "{s}/meson.build", .{fixture}),
+        \\project('app', 'cpp', default_options: ['cpp_std=c++17'])
+        \\executable('app', 'src/main.cpp')
+    );
+
+    const project = try importMeson(alloc, fixture);
+    try std.testing.expectEqual(project_mod.CppStandard.cpp17, project.defaults.cpp_standard);
+}
+
+test "meson import falls back to defaults when no targets found" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const fixture = try std.fmt.allocPrint(alloc, "build/.tmp-ovo-meson-import-fallback-{d}", .{std.time.milliTimestamp()});
+    defer core.fs.removeTreeIfExists(fixture) catch {};
+
+    try core.fs.writeFile(try std.fmt.allocPrint(alloc, "{s}/meson.build", .{fixture}),
+        \\project('empty', 'cpp')
+    );
+
+    const project = try importMeson(alloc, fixture);
+    try std.testing.expectEqual(@as(usize, 1), project.targets.len);
+    try std.testing.expectEqual(project_mod.TargetType.executable, project.targets[0].kind);
+}
+
+test "meson import handles include_directories" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const fixture = try std.fmt.allocPrint(alloc, "build/.tmp-ovo-meson-import-inc-{d}", .{std.time.milliTimestamp()});
+    defer core.fs.removeTreeIfExists(fixture) catch {};
+
+    try core.fs.writeFile(try std.fmt.allocPrint(alloc, "{s}/meson.build", .{fixture}),
+        \\project('app', 'cpp')
+        \\inc = include_directories('include', 'src')
+        \\executable('app', 'src/main.cpp')
+    );
+
+    const project = try importMeson(alloc, fixture);
+    try std.testing.expectEqual(@as(usize, 1), project.targets.len);
+    // Global include dirs are merged into the target
+    try std.testing.expect(project.targets[0].include_dirs.len >= 2);
+}
+
+test "meson function call extraction handles multiline" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const input =
+        \\executable('app',
+        \\  'src/main.cpp',
+        \\  'src/util.cpp'
+        \\)
+    ;
+
+    const calls = try extractMesonFunctions(alloc, input);
+    try std.testing.expectEqual(@as(usize, 1), calls.len);
+    try std.testing.expectEqualStrings("executable", calls[0].name);
+    try std.testing.expectEqual(@as(usize, 3), calls[0].positional.len);
+}
+
+test "meson argument parser splits positional and keyword args" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const input = "'app', 'src/main.cpp', version: '1.0'";
+    const parsed = try parseMesonArguments(alloc, input);
+    try std.testing.expectEqual(@as(usize, 2), parsed.positional.len);
+    try std.testing.expectEqualStrings("app", parsed.positional[0]);
+    try std.testing.expectEqualStrings("src/main.cpp", parsed.positional[1]);
+    try std.testing.expectEqual(@as(usize, 1), parsed.keywords.len);
+    try std.testing.expectEqualStrings("version", parsed.keywords[0].key);
+}
+
+// ── Makefile import tests ───────────────────────────────────────────
+
+test "importMakefile parses variable assignments and include dirs" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const fixture = try std.fmt.allocPrint(alloc, "build/.tmp-ovo-makefile-import-vars-{d}", .{std.time.milliTimestamp()});
+    defer core.fs.removeTreeIfExists(fixture) catch {};
+
+    try core.fs.writeFile(
+        try std.fmt.allocPrint(alloc, "{s}/Makefile", .{fixture}),
+        "CXX = g++\nCXXFLAGS = -std=c++20 -Iinclude -Isrc/headers\nSOURCES = src/main.cpp src/util.cpp\n\napp: $(SOURCES)\n\t$(CXX) $(CXXFLAGS) $(SOURCES) -o app\n",
+    );
+
+    const project = try importMakefile(alloc, fixture);
+    try std.testing.expectEqualStrings("app", project.targets[0].name);
+    try std.testing.expect(project.targets[0].include_dirs.len >= 1);
+}
+
+test "importMakefile detects library targets via ar command" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const fixture = try std.fmt.allocPrint(alloc, "build/.tmp-ovo-makefile-import-ar-{d}", .{std.time.milliTimestamp()});
+    defer core.fs.removeTreeIfExists(fixture) catch {};
+
+    try core.fs.writeFile(
+        try std.fmt.allocPrint(alloc, "{s}/Makefile", .{fixture}),
+        "libfoo.a: foo.cpp\n\tg++ -c foo.cpp -o foo.o\n\tar rcs libfoo.a foo.o\n",
+    );
+
+    const project = try importMakefile(alloc, fixture);
+    try std.testing.expectEqual(@as(usize, 1), project.targets.len);
+    try std.testing.expectEqual(project_mod.TargetType.library_static, project.targets[0].kind);
+}
+
+test "importMakefile detects shared library via -shared flag" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const fixture = try std.fmt.allocPrint(alloc, "build/.tmp-ovo-makefile-import-shared-{d}", .{std.time.milliTimestamp()});
+    defer core.fs.removeTreeIfExists(fixture) catch {};
+
+    try core.fs.writeFile(
+        try std.fmt.allocPrint(alloc, "{s}/Makefile", .{fixture}),
+        "libbar.so: bar.cpp\n\tg++ -shared bar.cpp -o libbar.so\n",
+    );
+
+    const project = try importMakefile(alloc, fixture);
+    try std.testing.expectEqual(@as(usize, 1), project.targets.len);
+    try std.testing.expectEqual(project_mod.TargetType.library_shared, project.targets[0].kind);
+}
+
+test "importMakefile falls back to naive scanning when no rules found" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const fixture = try std.fmt.allocPrint(alloc, "build/.tmp-ovo-makefile-import-naive-{d}", .{std.time.milliTimestamp()});
+    defer core.fs.removeTreeIfExists(fixture) catch {};
+
+    try core.fs.writeFile(
+        try std.fmt.allocPrint(alloc, "{s}/Makefile", .{fixture}),
+        "# Just a comment referencing src/main.cpp\nall:\n\tg++ src/main.cpp -o app\n",
+    );
+
+    const project = try importMakefile(alloc, fixture);
+    try std.testing.expectEqual(@as(usize, 1), project.targets.len);
+    try std.testing.expect(project.targets[0].sources.len >= 1);
+}
+
+// ── CMake expansion tests ───────────────────────────────────────────
+
+test "cmake import handles find_package" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const fixture = try std.fmt.allocPrint(alloc, "build/.tmp-ovo-cmake-import-findpkg-{d}", .{std.time.milliTimestamp()});
+    defer core.fs.removeTreeIfExists(fixture) catch {};
+
+    try core.fs.writeFile(try std.fmt.allocPrint(alloc, "{s}/CMakeLists.txt", .{fixture}),
+        \\project(FPTest)
+        \\find_package(Boost 1.80 REQUIRED)
+        \\find_package(OpenSSL REQUIRED)
+        \\add_executable(app src/main.cpp)
+    );
+
+    const project = try importCMake(alloc, fixture);
+    try std.testing.expectEqual(@as(usize, 2), project.dependencies.len);
+    try std.testing.expectEqualStrings("Boost", project.dependencies[0].name);
+    try std.testing.expectEqualStrings("1.80", project.dependencies[0].version);
+    try std.testing.expectEqualStrings("OpenSSL", project.dependencies[1].name);
+}
+
+test "cmake import handles list APPEND" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const fixture = try std.fmt.allocPrint(alloc, "build/.tmp-ovo-cmake-import-listappend-{d}", .{std.time.milliTimestamp()});
+    defer core.fs.removeTreeIfExists(fixture) catch {};
+
+    try core.fs.writeFile(try std.fmt.allocPrint(alloc, "{s}/CMakeLists.txt", .{fixture}),
+        \\project(ListApp)
+        \\set(MY_SOURCES src/a.cpp)
+        \\list(APPEND MY_SOURCES src/b.cpp src/c.cpp)
+        \\add_executable(app ${MY_SOURCES})
+    );
+
+    const project = try importCMake(alloc, fixture);
+    try std.testing.expectEqual(@as(usize, 1), project.targets.len);
+    try std.testing.expectEqual(@as(usize, 3), project.targets[0].sources.len);
+    try std.testing.expectEqualStrings("src/a.cpp", project.targets[0].sources[0]);
+    try std.testing.expectEqualStrings("src/b.cpp", project.targets[0].sources[1]);
+    try std.testing.expectEqualStrings("src/c.cpp", project.targets[0].sources[2]);
 }
