@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const core = @import("../core/mod.zig");
 const project_mod = @import("../core/project.zig");
 const zon = @import("../zon/mod.zig");
+const lockfile = @import("../package/lockfile.zig");
 
 pub const BuildOptions = struct {
     target_name: ?[]const u8 = null,
@@ -153,14 +154,21 @@ pub fn buildProject(allocator: std.mem.Allocator, options: BuildOptions) !BuildR
             // Collect results, then deinit shared GPA
             var first_err: ?anyerror = null;
             for (wave, 0..) |target_idx, wi| {
+                const owned_artifact_path = wave_results[wi].artifact_path;
                 if (wave_results[wi].err) |err| {
                     if (first_err == null) first_err = err;
+                    if (owned_artifact_path.len > 0) {
+                        target_gpa_alloc.free(owned_artifact_path);
+                    }
                     continue;
                 }
                 const target = project.targets[target_idx];
                 // Dupe artifact_path to the arena allocator so it survives GPA deinit
-                const path_copy = allocator.dupe(u8, wave_results[wi].artifact_path) catch {
+                const path_copy = allocator.dupe(u8, owned_artifact_path) catch {
                     if (first_err == null) first_err = error.OutOfMemory;
+                    if (owned_artifact_path.len > 0) {
+                        target_gpa_alloc.free(owned_artifact_path);
+                    }
                     continue;
                 };
                 total_compiled += wave_results[wi].compiled_count;
@@ -170,8 +178,15 @@ pub fn buildProject(allocator: std.mem.Allocator, options: BuildOptions) !BuildR
                     .path = path_copy,
                 }) catch {
                     if (first_err == null) first_err = error.OutOfMemory;
+                    if (owned_artifact_path.len > 0) {
+                        target_gpa_alloc.free(owned_artifact_path);
+                    }
                     continue;
                 };
+
+                if (owned_artifact_path.len > 0) {
+                    target_gpa_alloc.free(owned_artifact_path);
+                }
             }
 
             _ = target_gpa.deinit();
@@ -282,8 +297,9 @@ fn resolveDependencyIncludes(
     for (target_includes) |inc| try merged.append(allocator, inc);
 
     // Scan fetched dependency cache dirs for include/ subdirs
+    const lock = lockfileParseIfAvailable(allocator) catch null;
     for (project.dependencies) |dep| {
-        const dep_dir = try std.fmt.allocPrint(allocator, ".ovo/cache/{s}-{s}", .{ dep.name, dep.version });
+        const dep_dir = try resolveDependencyCacheDir(allocator, lock, dep);
         const include_path = try std.fmt.allocPrint(allocator, "{s}/include", .{dep_dir});
         if (core.fs.fileExists(include_path)) {
             try merged.append(allocator, include_path);
@@ -300,6 +316,33 @@ fn resolveDependencyIncludes(
     }
 
     return try merged.toOwnedSlice(allocator);
+}
+
+fn lockfileParseIfAvailable(allocator: std.mem.Allocator) !?lockfile.LockFile {
+    if (!core.fs.fileExists("ovo.lock.zon")) return null;
+    const bytes = try core.fs.readFileAlloc(allocator, "ovo.lock.zon");
+    return try lockfile.parseLockFile(allocator, bytes);
+}
+
+fn resolveDependencyCacheDir(
+    allocator: std.mem.Allocator,
+    lock: ?lockfile.LockFile,
+    dep: project_mod.Dependency,
+) ![]const u8 {
+    if (lock) |l| {
+        if (lockfile.findDependency(l, dep.name)) |locked| {
+            if (locked.cache_key.len > 0) {
+                const hashed = try std.fmt.allocPrint(allocator, ".ovo/cache/{s}", .{locked.cache_key});
+                if (core.fs.fileExists(hashed)) {
+                    return hashed;
+                }
+                allocator.free(hashed);
+            }
+        }
+    }
+
+    const legacy_key = try std.fmt.allocPrint(allocator, ".ovo/cache/{s}-{s}", .{ dep.name, dep.version });
+    return legacy_key;
 }
 
 const BuildTargetResult = struct {

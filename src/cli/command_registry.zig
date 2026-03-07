@@ -19,9 +19,9 @@ pub const commands = [_]CommandSpec{
     .{
         .name = "new",
         .summary = "Create a new project",
-        .usage = "ovo new <name>",
+        .usage = "ovo new <relative_path>",
         .group = .basic,
-        .examples = &.{"ovo new myapp"},
+        .examples = &.{ "ovo new myapp", "ovo new apps/myapp" },
     },
     .{
         .name = "init",
@@ -68,11 +68,14 @@ pub const commands = [_]CommandSpec{
     .{
         .name = "add",
         .summary = "Add a dependency",
-        .usage = "ovo add <package> [version]",
+        .usage = "ovo add <package> [version] [--git <url>|--path <path>|--registry <version>]",
         .group = .package,
         .examples = &.{
             "ovo add zlib",
             "ovo add fmt 10.2.1",
+            "ovo add fmt --git https://github.com/fmtlib/fmt.git",
+            "ovo add fmt --path ../vendor/fmt",
+            "ovo add fmt --registry latest",
         },
     },
     .{
@@ -85,9 +88,12 @@ pub const commands = [_]CommandSpec{
     .{
         .name = "fetch",
         .summary = "Download dependencies",
-        .usage = "ovo fetch",
+        .usage = "ovo fetch [--refresh]",
         .group = .package,
-        .examples = &.{"ovo fetch"},
+        .examples = &.{
+            "ovo fetch",
+            "ovo fetch --refresh",
+        },
     },
     .{
         .name = "update",

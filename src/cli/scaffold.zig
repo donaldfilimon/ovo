@@ -7,6 +7,7 @@ pub fn createProjectSkeleton(
     allocator: std.mem.Allocator,
     root_path: []const u8,
     project_name: []const u8,
+    target_base_id: []const u8,
 ) !void {
     if (root_path.len > 0 and !std.mem.eql(u8, root_path, ".")) {
         try core.fs.ensureDir(root_path);
@@ -25,8 +26,7 @@ pub fn createProjectSkeleton(
         try std.fmt.allocPrint(allocator, "{s}/src/main.cpp", .{root_path});
 
     if (!core.fs.fileExists(main_cpp_path)) {
-        try core.fs.writeFile(
-            main_cpp_path,
+        try core.fs.writeFile(main_cpp_path,
             \\#include <iostream>
             \\
             \\int main() {
@@ -42,8 +42,7 @@ pub fn createProjectSkeleton(
     else
         try std.fmt.allocPrint(allocator, "{s}/tests/main_test.cpp", .{root_path});
     if (!core.fs.fileExists(test_cpp_path)) {
-        try core.fs.writeFile(
-            test_cpp_path,
+        try core.fs.writeFile(test_cpp_path,
             \\#include <cassert>
             \\
             \\int main() {
@@ -55,13 +54,13 @@ pub fn createProjectSkeleton(
     }
 
     const app_target = project_mod.Target{
-        .name = project_name,
+        .name = target_base_id,
         .kind = .executable,
         .sources = &.{"src/main.cpp"},
         .include_dirs = &.{"include"},
     };
     const test_target = project_mod.Target{
-        .name = try std.fmt.allocPrint(allocator, "{s}_test", .{project_name}),
+        .name = try std.fmt.allocPrint(allocator, "{s}_test", .{target_base_id}),
         .kind = .test_target,
         .sources = &.{"tests/main_test.cpp"},
         .include_dirs = &.{"include"},

@@ -50,62 +50,79 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run OVO");
     run_step.dependOn(&run_cmd.step);
 
-    const check_step = b.step("check", "Compile OVO without running tests");
-    check_step.dependOn(&exe.step);
+    const typecheck = b.step("typecheck", "Compile OVO without running tests");
+    typecheck.dependOn(&exe.step);
 
-    const unit = addTestStep(
+    const unit_tests = addTestStep(
         b,
-        "test",
+        "unit-tests",
         "Run unit tests",
         "tests/unit/test_all.zig",
         ovo_module,
         target,
         optimize,
     );
-    const smoke = addTestStep(
+    const cli_tests_smoke = addTestStep(
         b,
-        "test-cli-smoke",
+        "cli-tests-smoke",
         "Run smoke CLI checks",
         "tests/cli/smoke/test_cli_smoke.zig",
         ovo_module,
         target,
         optimize,
     );
-    const deep = addTestStep(
+    const cli_tests_deep = addTestStep(
         b,
-        "test-cli-deep",
+        "cli-tests-deep",
         "Run deep CLI checks",
         "tests/cli/deep/test_cli_deep.zig",
         ovo_module,
         target,
         optimize,
     );
-    const stress = addTestStep(
+    const cli_tests_stress = addTestStep(
         b,
-        "test-cli-stress",
+        "cli-tests-stress",
         "Run stress CLI checks",
         "tests/cli/stress/test_cli_stress.zig",
         ovo_module,
         target,
         optimize,
     );
-    const integration = addTestStep(
+    const cli_tests_integration = addTestStep(
         b,
-        "test-cli-integration",
+        "cli-tests-integration",
         "Run integration CLI checks",
         "tests/cli/integration/test_cli_integration.zig",
         ovo_module,
         target,
         optimize,
     );
+    const cli_test_env_check = b.addSystemCommand(&.{"bash"});
+    cli_test_env_check.addFileArg(b.path("scripts/check-cli-test-env.sh"));
+    const cli_variation_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/cli/variations/test_cli_variations.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "ovo", .module = ovo_module },
+            },
+        }),
+    });
+    const run_cli_variations = b.addRunArtifact(cli_variation_tests);
+    run_cli_variations.step.dependOn(&cli_test_env_check.step);
+    const cli_tests_variations = b.step("cli-tests-variations", "Run full CLI variation matrix checks");
+    cli_tests_variations.dependOn(&run_cli_variations.step);
 
-    const cli_all = b.step("test-cli-all", "Run all CLI tiers");
-    cli_all.dependOn(smoke);
-    cli_all.dependOn(deep);
-    cli_all.dependOn(stress);
-    cli_all.dependOn(integration);
+    const cli_tests = b.step("cli-tests", "Run all CLI tiers");
+    cli_tests.dependOn(cli_tests_smoke);
+    cli_tests.dependOn(cli_tests_deep);
+    cli_tests.dependOn(cli_tests_stress);
+    cli_tests.dependOn(cli_tests_integration);
+    cli_tests.dependOn(cli_tests_variations);
 
-    const help_matrix = b.step("test-cli-help-matrix", "Run `--help` for every CLI command");
+    const help_matrix = b.step("cli-help-matrix", "Run `--help` for every CLI command");
     const base_help = b.addRunArtifact(exe);
     base_help.addArg("--quiet");
     base_help.addArg("--help");
@@ -119,9 +136,20 @@ pub fn build(b: *std.Build) void {
         help_matrix.dependOn(&run_help.step);
     }
 
-    const test_all = b.step("test-all", "Run all verification steps");
-    test_all.dependOn(check_step);
-    test_all.dependOn(unit);
-    test_all.dependOn(cli_all);
-    test_all.dependOn(help_matrix);
+    const version_consistency = addTestStep(
+        b,
+        "zig-version-consistency",
+        "Verify active zig version matches .zigversion and build.zig.zon minimum",
+        "tests/unit/test_zig_version_consistency.zig",
+        ovo_module,
+        target,
+        optimize,
+    );
+
+    const full_check = b.step("full-check", "Run full verification gates");
+    full_check.dependOn(version_consistency);
+    full_check.dependOn(typecheck);
+    full_check.dependOn(unit_tests);
+    full_check.dependOn(cli_tests);
+    full_check.dependOn(help_matrix);
 }

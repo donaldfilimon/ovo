@@ -1,4 +1,5 @@
 pub const cli = @import("cli/mod.zig");
+pub const core = @import("core/mod.zig");
 pub const cli_args = @import("cli/args.zig");
 pub const cli_dispatch = @import("cli/command_dispatch.zig");
 pub const cli_context = @import("cli/context.zig");
@@ -10,5 +11,8 @@ pub const compiler = @import("compiler/mod.zig");
 pub const build_orchestrator = @import("build/orchestrator.zig");
 pub const core_project = @import("core/project.zig");
 pub const package_manager = @import("package/manager.zig");
+pub const package_source_spec = @import("package/source_spec.zig");
+pub const package_registry = @import("package/registry.zig");
+pub const package_lockfile = @import("package/lockfile.zig");
 pub const translate = @import("translate/mod.zig");
 pub const graph = @import("graph/mod.zig");
