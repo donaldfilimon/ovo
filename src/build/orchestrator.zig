@@ -877,6 +877,7 @@ fn compileAndLinkExecutable(
     if (!needs_link) return .{ .compile_timings = result.timings, .link_elapsed_ns = 0 };
 
     const is_msvc = std.mem.eql(u8, backend, "msvc");
+    const is_macos = builtin.os.tag == .macos;
     var argv: std.ArrayList([]const u8) = .empty;
     try appendCompilerPrefix(allocator, &argv, backend);
     for (result.objects) |obj| try argv.append(allocator, obj);
@@ -885,6 +886,7 @@ fn compileAndLinkExecutable(
         try argv.append(allocator, try std.fmt.allocPrint(allocator, "/Fe:{s}", .{output}));
     } else {
         for (link_libraries) |lib| try argv.append(allocator, try std.fmt.allocPrint(allocator, "-l{s}", .{lib}));
+        if (is_macos) try appendMacosLinkerFlags(allocator, &argv, output);
         try argv.append(allocator, "-o");
         try argv.append(allocator, output);
     }
@@ -942,6 +944,10 @@ fn compileSharedLibrary(
         try argv.append(allocator, try std.fmt.allocPrint(allocator, "/Fe:{s}", .{output}));
     } else {
         for (link_libraries) |lib| try argv.append(allocator, try std.fmt.allocPrint(allocator, "-l{s}", .{lib}));
+        if (builtin.os.tag == .macos) {
+            try argv.append(allocator, "-Wl,-install_name,@rpath/{s}");
+            try argv.append(allocator, try std.fmt.allocPrint(allocator, "-Wl,-id,@rpath/{s}", .{std.fs.path.basename(output)}));
+        }
         try argv.append(allocator, "-o");
         try argv.append(allocator, output);
     }
@@ -1026,6 +1032,17 @@ fn appendCompilerPrefix(
         return;
     }
     return error.UnsupportedCompilerBackend;
+}
+
+fn appendMacosLinkerFlags(
+    allocator: std.mem.Allocator,
+    argv: *std.ArrayList([]const u8),
+    output: []const u8,
+) !void {
+    try argv.append(allocator, "-Wl,-e,_main");
+    try argv.append(allocator, "-Wl,-rpath,@executable_path/../lib");
+    const basename = std.fs.path.basename(output);
+    try argv.append(allocator, try std.fmt.allocPrint(allocator, "-Wl,-install_name,@rpath/{s}", .{basename}));
 }
 
 fn appendCommonCompileFlags(
