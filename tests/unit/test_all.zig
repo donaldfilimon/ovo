@@ -432,7 +432,39 @@ test "sortedUniqueDependencies handles already-sorted input" {
     try std.testing.expectEqualStrings("ccc", result[2].name);
 }
 
-// ── Export Formats ──────────────────────────────────────────────────
+// ── Import Formats ────────────────────────────────────────────────────
+
+test "parseImportFormat recognizes all formats" {
+    const cases = [_]struct { input: []const u8, expected: ?importer.ImportFormat }{
+        .{ .input = "cmake", .expected = .cmake },
+        .{ .input = "CMake", .expected = .cmake },
+        .{ .input = "xcode", .expected = .xcode },
+        .{ .input = "Xcode", .expected = .xcode },
+        .{ .input = "msbuild", .expected = .msbuild },
+        .{ .input = "meson", .expected = .meson },
+        .{ .input = "makefile", .expected = .makefile },
+        .{ .input = "vcpkg", .expected = .vcpkg },
+        .{ .input = "conan", .expected = .conan },
+        .{ .input = "unknown", .expected = null },
+    };
+    for (cases) |case| {
+        try std.testing.expectEqual(case.expected, importer.parseImportFormat(case.input));
+    }
+}
+
+test "importLabel round-trips with parseImportFormat" {
+    const formats = [_]importer.ImportFormat{
+        .cmake, .xcode, .msbuild, .meson, .makefile, .vcpkg, .conan,
+    };
+    for (formats) |fmt| {
+        const lbl = importer.label(fmt);
+        const parsed = importer.parseImportFormat(lbl);
+        try std.testing.expect(parsed != null);
+        try std.testing.expectEqual(fmt, parsed.?);
+    }
+}
+
+// ── Export Formats ────────────────────────────────────────────────────
 
 test "parseExportFormat recognizes all formats" {
     const cases = [_]struct { input: []const u8, expected: ?exporter.ExportFormat }{
