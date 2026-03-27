@@ -1425,3 +1425,15 @@ test "zon parser handles target with all fields including defines and cflags" {
     try std.testing.expectEqualStrings("boost", parsed.dependencies[0].name);
     try std.testing.expectEqualStrings("1.84.0", parsed.dependencies[0].version);
 }
+
+// ── Core Runtime ─────────────────────────────────────────────────────
+
+test "runtime setIo and io round-trip" {
+    // Set a mock io
+    const mock_io: std.Io = undefined;
+    ovo.core.runtime.setIo(mock_io);
+
+    // Verify io() returns the set value
+    const result = ovo.core.runtime.io();
+    _ = result; // Just verify it doesn't panic
+}

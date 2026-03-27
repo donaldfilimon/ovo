@@ -2,7 +2,7 @@
     .name = .ovo,
     .version = "0.1.0-dev",
     .fingerprint = 0x18a2f7b6f5aa1ad8,
-    .minimum_zig_version = "0.16.0-dev.2682+02142a54d",
+    .minimum_zig_version = "0.16.0-dev.2984+cb7d2b056",
     .dependencies = .{},
     .paths = .{
         "build.zig",

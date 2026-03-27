@@ -6,7 +6,6 @@ const exec = @import("../core/exec.zig");
 const source_spec = @import("source_spec.zig");
 const registry_mod = @import("registry.zig");
 const lockfile = @import("lockfile.zig");
-const http = std.http;
 const HttpClient = std.http.Client;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 
@@ -180,7 +179,7 @@ pub const PackageManager = struct {
         defer arena.deinit();
         const temp = arena.allocator();
 
-        var project = try loadProject(temp);
+        const project = try loadProject(temp);
         const registry_entries = try registry_mod.loadManifest(temp);
 
         var deps: std.ArrayList(project_mod.Dependency) = .empty;
@@ -214,7 +213,7 @@ pub const PackageManager = struct {
         defer arena.deinit();
         const temp = arena.allocator();
 
-        var project = try loadProject(temp);
+        const project = try loadProject(temp);
         const registry_entries = try registry_mod.loadManifest(temp);
 
         var resolved = try resolveFromProject(temp, project.dependencies, registry_entries);
@@ -342,6 +341,7 @@ fn resolveFromProject(
     registry_entries: []const registry_mod.RegistryEntry,
 ) !std.ArrayList(ResolvedDependency) {
     var list: std.ArrayList(ResolvedDependency) = .empty;
+    errdefer list.deinit(allocator);
     for (deps) |dep| {
         try list.append(allocator, try resolveSingle(allocator, dep, registry_entries));
     }
@@ -642,10 +642,7 @@ fn verifySha256(allocator: std.mem.Allocator, file_path: []const u8, expected_he
     var normalized = try allocator.alloc(u8, expected_hex.len);
     defer allocator.free(normalized);
     for (expected_hex, 0..) |c, idx| {
-        normalized[idx] = switch (c) {
-            'A'...'F' => c + 32,
-            else => c,
-        };
+        normalized[idx] = std.ascii.toLower(c);
     }
 
     if (!std.mem.eql(u8, computed[0..normalized.len], normalized)) return error.ArchiveChecksumMismatch;

@@ -51,19 +51,14 @@ zig build full-check
 
 Use the local workflow contract for non-trivial engineering tasks (3+ steps or architectural decisions).
 
-```bash
-./scripts/workflow.sh init "<objective>"
-# populate tasks/todo.md and execute work
-./scripts/workflow.sh check
-./scripts/workflow.sh lesson --task "<task>" --correction "<correction>" --root-cause "<root cause>" --rule "<prevention rule>" --signal "<detection signal>"
-```
-
 Expected lifecycle:
 
 1. Initialize `tasks/todo.md` before implementation.
 2. Track progress and verification evidence while implementing.
-3. Run `check` before marking completion.
-4. Append lessons after user corrections.
+3. Run verification gates before marking completion.
+4. Append lessons to `tasks/lessons.md` after user corrections.
+
+See `AGENTS.md` for detailed workflow orchestration guidelines.
 
 ## Command Surface
 

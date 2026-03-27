@@ -1,0 +1,13 @@
+#!/bin/bash
+# Workaround for macOS 26.4+ where Xcode SDK's libSystem.tbd only exports
+# arm64e symbols (not arm64).  The CommandLineTools 15.x SDK still ships
+# arm64 in libSystem.tbd, so we intercept the SDK path lookup that zig
+# performs via `xcrun --sdk macosx --show-sdk-path`.
+if [[ "$1" == "--sdk" && "$2" == "macosx" && "$3" == "--show-sdk-path" ]]; then
+    CLT_SDK="/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk"
+    if [[ -d "$CLT_SDK" ]]; then
+        echo "$CLT_SDK"
+        exit 0
+    fi
+fi
+exec /usr/bin/xcrun "$@"

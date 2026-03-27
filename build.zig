@@ -15,6 +15,7 @@ fn addTestStep(
             .root_source_file = b.path(root_source_file),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
             .imports = &.{
                 .{ .name = "ovo", .module = ovo_module },
             },
@@ -33,6 +34,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/ovo.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
 
     const exe = b.addExecutable(.{
@@ -41,8 +43,15 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
         }),
     });
+    // On macOS, link libSystem which provides libc functionality
+    if (target.result.os.tag == .macos) {
+        exe.root_module.linkSystemLibrary("System", .{});
+    } else {
+        exe.root_module.linkSystemLibrary("c", .{});
+    }
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
@@ -105,6 +114,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tests/cli/variations/test_cli_variations.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
             .imports = &.{
                 .{ .name = "ovo", .module = ovo_module },
             },
@@ -146,10 +156,27 @@ pub fn build(b: *std.Build) void {
         optimize,
     );
 
+    const toolchain_doctor = b.step("toolchain-doctor", "Diagnose toolchain environment");
+    const doctor_run = b.addRunArtifact(exe);
+    doctor_run.addArg("doctor");
+    toolchain_doctor.dependOn(&doctor_run.step);
+
+    const gendocs = b.step("gendocs", "Generate project documentation");
+    const doc_run = b.addRunArtifact(exe);
+    doc_run.addArg("doc");
+    // Support passthrough args for gendocs as seen in some requirements
+    if (b.args) |args| doc_run.addArgs(args);
+    gendocs.dependOn(&doc_run.step);
+
+    const check_docs = b.step("check-docs", "Verify documentation is up to date");
+    check_docs.dependOn(gendocs);
+
     const full_check = b.step("full-check", "Run full verification gates");
     full_check.dependOn(version_consistency);
     full_check.dependOn(typecheck);
     full_check.dependOn(unit_tests);
     full_check.dependOn(cli_tests);
     full_check.dependOn(help_matrix);
+    full_check.dependOn(toolchain_doctor);
+    full_check.dependOn(check_docs);
 }

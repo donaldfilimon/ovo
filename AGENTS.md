@@ -1,4 +1,4 @@
----
+/ex---
 description: 
 alwaysApply: true
 ---
@@ -89,9 +89,10 @@ Use these gates in order of confidence:
 2. Compile-only: `zig build typecheck`
 3. Unit coverage: `zig build unit-tests`
 4. Deep CLI behavior: `zig build cli-tests-deep`
-5. Integration CLI flows: `zig build cli-tests-integration`
-6. Exhaustive CLI variations: `zig build cli-tests-variations`
-7. Full pre-merge gate: `zig build full-check`
+5. Stress CLI behavior: `zig build cli-tests-stress`
+6. Integration CLI flows: `zig build cli-tests-integration`
+7. Exhaustive CLI variations: `zig build cli-tests-variations`
+8. Full pre-merge gate: `zig build full-check`
 
 `cli-tests-variations` enforces a strict CLI test environment (`zig`, `clang-format`, `clang-tidy`, `clang++`, `g++`, `cmake`, `ninja`, `doxygen`, `clang-doc`) before executing.
 `full-check` is the umbrella gate (version-consistency + typecheck + unit + CLI tiers + help matrix).
@@ -106,6 +107,10 @@ Use these gates in order of confidence:
 - `src/package/`: dependency source classification, registry, lockfile, fetch/update/lock manager.
 - `src/translate/`: import/export adapters.
 - `src/graph/`: dependency graph renderers for `tree`.
+- `src/compiler/`: backend abstraction (Clang/GCC/MSVC/Zig CC).
+- `src/zon/`: ZON schema, parser, and writer boundary.
+- `src/version.zig`: version metadata.
+- `src/main.cpp`: C++ entry point (scaffold target).
 - `tests/unit/`: unit suite via `tests/unit/test_all.zig`.
 - `tests/cli/`: smoke/deep/stress/integration CLI tiers.
 
@@ -130,3 +135,79 @@ Use these gates in order of confidence:
 
 - Tests should import project APIs through `@import("ovo")`.
 - Avoid direct source-path imports in tests unless absolutely necessary for fixture-only helpers.
+
+### Exit Code Convention
+
+All CLI handlers return `!u8`:
+- `return 0` — success.
+- `return 1` — runtime/environment failures.
+- `return 2` — user input validation errors (missing args, bad flags, invalid values).
+- Forward child process exit codes: `if (code != 0) return code;`
+
+### Command Registry Structure
+
+```zig
+pub const CommandGroup = enum { basic, package, tooling, translation };
+pub const CommandSpec = struct {
+    name: []const u8,
+    summary: []const u8,
+    usage: []const u8,
+    group: CommandGroup,
+    examples: []const []const u8 = &.{},
+};
+```
+
+21 commands registered in `src/cli/command_registry.zig`. Adding/changing commands requires syncing `command_dispatch.zig` and all related tests.
+
+---
+
+## Code Style Guidelines
+
+### Imports
+- Use module imports via `@import("path")` pattern.
+- Group imports logically: std, internal modules, internal packages.
+- Prefer importing the package root (e.g., `@import("ovo")`) in tests.
+
+### Formatting
+- Use 4-space indentation (no tabs).
+- Keep lines under 100 characters when practical.
+- Use multiline strings with consistent indentation (avoid trailing tabs in literals).
+- Align related declarations vertically where it aids readability.
+
+### Types and Declarations
+- Prefer `const` for immutable bindings; use `var` only when mutation is required.
+- Use explicit struct/enum names for public APIs; allow inferred types for internal helpers.
+- Prefix error types with `error.` (Zig convention).
+- Use descriptive names: `cache_key` over `ck`, `resolvedDependencies` over `RD`.
+
+### Naming Conventions
+- **Variables/functions**: `snake_case` (e.g., `file_exists`, `parseArgs`)
+- **Types/structs/enums**: `PascalCase` (e.g., `ParsedArgs`, `CommandSpec`)
+- **Constants**: `PascalCase` for type-level, `UPPER_SNAKE` for compile-time values.
+- **Modules/packages**: `snake_case` directory names.
+
+### Error Handling
+- Use `try` for fallible operations that should propagate.
+- Use `catch` for known recovery paths; avoid empty catches.
+- Prefer explicit error sets over `anyerror` where possible.
+- Avoid `@errorReturn`traced functions unless debugging.
+
+### Testing
+- Run single test: `zig test <path_to_test_file.zig>` or via build: `zig build unit-tests -- --test-name-pattern <pattern>`.
+- Use descriptive test names describing the scenario and expected behavior.
+- Group related tests in the same file under a single `test` block or use `test "description"` for granular reporting.
+
+---
+
+## Running Single Tests
+
+```bash
+# Specific test file
+zig test tests/unit/test_all.zig
+
+# By name pattern
+zig build unit-tests -- --test-name-pattern "test_name"
+
+# CLI smoke tests
+zig build cli-tests-smoke
+```

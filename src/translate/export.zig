@@ -927,7 +927,7 @@ fn deterministicGuid(name: []const u8) [38]u8 {
         @as(u16, @truncate(hash >> 64)),
         @as(u16, @truncate(hash >> 48)),
         @as(u48, @truncate(hash)),
-    }) catch unreachable;
+    }) catch @panic("bufPrint overflow in cmakeUuid");
     return buf;
 }
 
@@ -939,7 +939,7 @@ fn pbxUuid(seed: []const u8, counter: *u32) [24]u8 {
     hash = hash *% 65537 +% counter.*;
     counter.* += 1;
     var buf: [24]u8 = undefined;
-    _ = std.fmt.bufPrint(&buf, "{X:0>24}", .{hash}) catch unreachable;
+    _ = std.fmt.bufPrint(&buf, "{X:0>24}", .{hash}) catch @panic("bufPrint overflow in pbxUuid");
     return buf;
 }
 
