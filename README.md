@@ -141,3 +141,18 @@ See `AGENTS.md` for detailed workflow orchestration guidelines.
 - `docs/testing-matrix.md`
 - `docs/workflow-orchestration.md`
 - `docs/zig-0-16-migration.md`
+
+## Platform Support
+
+### macOS
+- Requires CommandLineTools SDK (15.4+)
+- Uses `-Wl,-rpath,@executable_path` for runtime library paths
+- Uses `-Wl,-install_name,@rpath` for dylib compatibility
+
+### Linux
+- Uses `-Wl,-rpath,$ORIGIN` for portable runtime paths
+- Uses `-Wl,--as-needed` to reduce linked libraries
+
+### Windows
+- Uses `/DYNAMICBASE`, `/NXCOMPAT` for security hardening
+- Uses `/INCREMENTAL:NO` for reliable builds

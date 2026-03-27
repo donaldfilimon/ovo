@@ -921,13 +921,14 @@ fn deterministicGuid(name: []const u8) [38]u8 {
         hash = hash *% 31 +% c;
     }
     var buf: [38]u8 = undefined;
-    _ = std.fmt.bufPrint(&buf, "{{{X:0>8}-{X:0>4}-{X:0>4}-{X:0>4}-{X:0>12}}}", .{
+    const formatted = std.fmt.bufPrint(&buf, "{{{X:0>8}-{X:0>4}-{X:0>4}-{X:0>4}-{X:0>12}}}", .{
         @as(u32, @truncate(hash >> 96)),
         @as(u16, @truncate(hash >> 80)),
         @as(u16, @truncate(hash >> 64)),
         @as(u16, @truncate(hash >> 48)),
         @as(u48, @truncate(hash)),
-    }) catch @panic("bufPrint overflow in cmakeUuid");
+    }) catch unreachable;
+    _ = formatted;
     return buf;
 }
 
@@ -939,7 +940,8 @@ fn pbxUuid(seed: []const u8, counter: *u32) [24]u8 {
     hash = hash *% 65537 +% counter.*;
     counter.* += 1;
     var buf: [24]u8 = undefined;
-    _ = std.fmt.bufPrint(&buf, "{X:0>24}", .{hash}) catch @panic("bufPrint overflow in pbxUuid");
+    const formatted = std.fmt.bufPrint(&buf, "{X:0>24}", .{hash}) catch unreachable;
+    _ = formatted;
     return buf;
 }
 

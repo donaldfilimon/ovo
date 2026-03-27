@@ -878,15 +878,16 @@ fn compileAndLinkExecutable(
 
     const is_msvc = std.mem.eql(u8, backend, "msvc");
     const is_macos = builtin.os.tag == .macos;
+    const is_linux = builtin.os.tag == .linux;
     var argv: std.ArrayList([]const u8) = .empty;
     try appendCompilerPrefix(allocator, &argv, backend);
     for (result.objects) |obj| try argv.append(allocator, obj);
     if (is_msvc) {
         for (link_libraries) |lib| try argv.append(allocator, try std.fmt.allocPrint(allocator, "{s}.lib", .{lib}));
-        try argv.append(allocator, try std.fmt.allocPrint(allocator, "/Fe:{s}", .{output}));
+        try appendWindowsLinkerFlags(allocator, &argv, output);
     } else {
         for (link_libraries) |lib| try argv.append(allocator, try std.fmt.allocPrint(allocator, "-l{s}", .{lib}));
-        if (is_macos) try appendMacosLinkerFlags(allocator, &argv, output);
+        if (is_macos) try appendMacosLinkerFlags(allocator, &argv, output) else if (is_linux) try appendLinuxLinkerFlags(&argv);
         try argv.append(allocator, "-o");
         try argv.append(allocator, output);
     }
@@ -1043,6 +1044,25 @@ fn appendMacosLinkerFlags(
     try argv.append(allocator, "-Wl,-rpath,@executable_path/../lib");
     const basename = std.fs.path.basename(output);
     try argv.append(allocator, try std.fmt.allocPrint(allocator, "-Wl,-install_name,@rpath/{s}", .{basename}));
+}
+
+fn appendLinuxLinkerFlags(
+    allocator: std.mem.Allocator,
+    argv: *std.ArrayList([]const u8),
+) !void {
+    try argv.append(allocator, "-Wl,-rpath,$ORIGIN/../lib");
+    try argv.append(allocator, "-Wl,--as-needed");
+}
+
+fn appendWindowsLinkerFlags(
+    allocator: std.mem.Allocator,
+    argv: *std.ArrayList([]const u8),
+    output: []const u8,
+) !void {
+    try argv.append(allocator, "/DYNAMICBASE");
+    try argv.append(allocator, "/NXCOMPAT");
+    try argv.append(allocator, "/INCREMENTAL:NO");
+    try argv.append(allocator, try std.fmt.allocPrint(allocator, "/OUT:{s}", .{output}));
 }
 
 fn appendCommonCompileFlags(
