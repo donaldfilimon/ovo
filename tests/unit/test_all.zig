@@ -12,6 +12,8 @@ const importer = ovo.translate.importer;
 const exporter = ovo.translate.exporter;
 const cli_args = ovo.cli_args;
 const graph_renderer = ovo.graph.renderer;
+const source_spec = ovo.package_source_spec;
+const lockfile = ovo.package_lockfile;
 
 // Pull in inline tests from imported modules that carry local regression coverage.
 comptime {
@@ -1523,4 +1525,224 @@ test "runtime setIo and io round-trip" {
     // Verify io() returns the set value
     const result = ovo.core.runtime.io();
     _ = result; // Just verify it doesn't panic
+}
+
+// ── CppStandard Round-Trip ───────────────────────────────────────────
+
+test "parseCppStandard round-trips with cppStandardLabel" {
+    const standards = [_]project_mod.CppStandard{
+        .c89,   .c99,   .c11,   .c17,
+        .cpp11, .cpp14, .cpp17, .cpp20,
+        .cpp23,
+    };
+    for (standards) |s| {
+        const lbl = project_mod.cppStandardLabel(s);
+        const parsed = project_mod.parseCppStandard(lbl);
+        try std.testing.expect(parsed != null);
+        try std.testing.expectEqual(s, parsed.?);
+    }
+}
+
+test "parseCppStandard rejects unknown values" {
+    try std.testing.expectEqual(@as(?project_mod.CppStandard, null), project_mod.parseCppStandard("cpp98"));
+    try std.testing.expectEqual(@as(?project_mod.CppStandard, null), project_mod.parseCppStandard(""));
+}
+
+// ── TargetType Zon Label ─────────────────────────────────────────────
+
+test "targetTypeZonLabel returns canonical zon enum literals" {
+    try std.testing.expectEqualStrings("executable", project_mod.targetTypeZonLabel(.executable));
+    try std.testing.expectEqualStrings("library_static", project_mod.targetTypeZonLabel(.library_static));
+    try std.testing.expectEqualStrings("library_shared", project_mod.targetTypeZonLabel(.library_shared));
+    try std.testing.expectEqualStrings("test_target", project_mod.targetTypeZonLabel(.test_target));
+}
+
+// ── Source Spec ───────────────────────────────────────────────────────
+
+test "classify detects git+ prefix as explicit git" {
+    const result = source_spec.classify("git+https://github.com/foo/bar");
+    try std.testing.expectEqual(source_spec.SourceKind.git, result.kind);
+    try std.testing.expectEqualStrings("https://github.com/foo/bar", result.request);
+    try std.testing.expect(result.explicit);
+}
+
+test "classify detects path: prefix as explicit local" {
+    const result = source_spec.classify("path:../mylib");
+    try std.testing.expectEqual(source_spec.SourceKind.local, result.kind);
+    try std.testing.expectEqualStrings("../mylib", result.request);
+    try std.testing.expect(result.explicit);
+}
+
+test "classify detects tarball URLs" {
+    const result = source_spec.classify("https://example.com/foo.tar.gz");
+    try std.testing.expectEqual(source_spec.SourceKind.tar, result.kind);
+}
+
+test "classify detects relative paths" {
+    const result = source_spec.classify("./mylib");
+    try std.testing.expectEqual(source_spec.SourceKind.local, result.kind);
+}
+
+test "classify treats bare names as registry" {
+    const result = source_spec.classify("fmt");
+    try std.testing.expectEqual(source_spec.SourceKind.registry, result.kind);
+    try std.testing.expectEqualStrings("fmt", result.request);
+}
+
+test "canonicalSpec prefixes git and local correctly" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const git_spec = try source_spec.canonicalSpec(.git, "https://github.com/foo/bar", alloc);
+    try std.testing.expectEqualStrings("git+https://github.com/foo/bar", git_spec);
+
+    const local_spec = try source_spec.canonicalSpec(.local, "../mylib", alloc);
+    try std.testing.expectEqualStrings("path:../mylib", local_spec);
+
+    const registry_spec = try source_spec.canonicalSpec(.registry, "fmt", alloc);
+    try std.testing.expectEqualStrings("fmt", registry_spec);
+}
+
+test "splitGitRef splits url and ref by #" {
+    const a = source_spec.splitGitRef("https://github.com/foo/bar#v1.0");
+    try std.testing.expectEqualStrings("https://github.com/foo/bar", a.url);
+    try std.testing.expectEqualStrings("v1.0", a.ref);
+
+    const b = source_spec.splitGitRef("https://github.com/foo/bar");
+    try std.testing.expectEqualStrings("https://github.com/foo/bar", b.url);
+    try std.testing.expectEqualStrings("", b.ref);
+
+    const c = source_spec.splitGitRef("https://github.com/foo/bar#");
+    try std.testing.expectEqualStrings("https://github.com/foo/bar", c.url);
+    try std.testing.expectEqualStrings("HEAD", c.ref);
+
+    const d = source_spec.splitGitRef("#v2.0");
+    try std.testing.expectEqualStrings("", d.url);
+    try std.testing.expectEqualStrings("v2.0", d.ref);
+}
+
+test "sourceLabel returns correct strings" {
+    try std.testing.expectEqualStrings("registry", source_spec.sourceLabel(.registry));
+    try std.testing.expectEqualStrings("git", source_spec.sourceLabel(.git));
+    try std.testing.expectEqualStrings("tar", source_spec.sourceLabel(.tar));
+    try std.testing.expectEqualStrings("local", source_spec.sourceLabel(.local));
+}
+
+// ── Lockfile ─────────────────────────────────────────────────────────
+
+test "parseLockFile parses schema v1 with dependencies" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const input =
+        \\.{
+        \\    .lock_schema = "1",
+        \\    .project = "myapp",
+        \\    .version = "1.0.0",
+        \\    .dependencies = .{
+        \\        .fmt = .{
+        \\            .requested = "10.2.1",
+        \\            .origin = .direct,
+        \\            .source = .registry,
+        \\            .url = "",
+        \\            .ref = "",
+        \\            .commit = "",
+        \\            .sha256 = "",
+        \\            .path = "",
+        \\            .cache_key = "",
+        \\        },
+        \\        .zlib = .{
+        \\            .requested = "1.3",
+        \\            .origin = .registry,
+        \\            .source = .tar,
+        \\            .url = "https://example.com/zlib.tar.gz",
+        \\            .sha256 = "abc123",
+        \\            .cache_key = "zlib-1.3",
+        \\        },
+        \\    },
+        \\}
+    ;
+
+    const parsed = try lockfile.parseLockFile(alloc, input);
+    try std.testing.expect(lockfile.isValidSchema(parsed));
+    try std.testing.expectEqualStrings("myapp", parsed.project orelse "");
+    try std.testing.expectEqualStrings("1.0.0", parsed.version orelse "");
+    try std.testing.expectEqual(@as(usize, 2), parsed.dependencies.len);
+
+    const fmt_dep = lockfile.findDependency(parsed, "fmt") orelse unreachable;
+    try std.testing.expectEqualStrings("10.2.1", fmt_dep.requested);
+    try std.testing.expectEqual(source_spec.SourceKind.registry, fmt_dep.source);
+
+    const zlib_dep = lockfile.findDependency(parsed, "zlib") orelse unreachable;
+    try std.testing.expectEqualStrings("https://example.com/zlib.tar.gz", zlib_dep.url);
+    try std.testing.expectEqualStrings("abc123", zlib_dep.sha256);
+}
+
+test "findDependency returns null for missing name" {
+    const file = lockfile.LockFile{ .dependencies = &.{} };
+    try std.testing.expect(lockfile.findDependency(file, "nonexistent") == null);
+}
+
+test "renderLockFile produces valid v1 lockfile output" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const deps = [_]lockfile.LockedDependency{
+        .{
+            .name = "fmt",
+            .requested = "10.2.1",
+            .origin = .direct,
+            .source = .registry,
+            .cache_key = "fmt-10.2.1",
+        },
+    };
+    const output = try lockfile.renderLockFile(alloc, "myapp", "1.0.0", &deps);
+    try std.testing.expect(std.mem.indexOf(u8, output, ".lock_schema = \"1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, ".project = \"myapp\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, ".version = \"1.0.0\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, ".fmt = .{") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, ".requested = \"10.2.1\"") != null);
+}
+
+test "parseLockFile handles legacy format gracefully" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const legacy =
+        \\.{
+        \\    .dependencies = .{
+        \\        .fmt = "10.2.1",
+        \\        .zlib = "1.3",
+        \\    },
+        \\}
+    ;
+
+    const parsed = try lockfile.parseLockFile(alloc, legacy);
+    try std.testing.expect(parsed.legacy);
+    try std.testing.expectEqual(@as(usize, 2), parsed.dependencies.len);
+    const fmt_dep = lockfile.findDependency(parsed, "fmt") orelse unreachable;
+    try std.testing.expectEqualStrings("10.2.1", fmt_dep.requested);
+}
+
+test "renderLockFile sorts dependencies alphabetically" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const deps = [_]lockfile.LockedDependency{
+        .{ .name = "zlib", .requested = "1.3", .origin = .direct, .source = .registry },
+        .{ .name = "boost", .requested = "1.84", .origin = .direct, .source = .registry },
+        .{ .name = "fmt", .requested = "10.2.1", .origin = .direct, .source = .registry },
+    };
+    const output = try lockfile.renderLockFile(alloc, "app", "1.0.0", &deps);
+
+    const boost_pos = std.mem.indexOf(u8, output, ".boost = .{").?;
+    const fmt_pos = std.mem.indexOf(u8, output, ".fmt = .{").?;
+    const zlib_pos = std.mem.indexOf(u8, output, ".zlib = .{").?;
+    try std.testing.expect(boost_pos < fmt_pos);
+    try std.testing.expect(fmt_pos < zlib_pos);
 }
