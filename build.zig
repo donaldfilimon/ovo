@@ -46,12 +46,8 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
-    // On macOS, link libSystem which provides libc functionality
-    if (target.result.os.tag == .macos) {
-        exe.root_module.linkSystemLibrary("System", .{});
-    } else {
-        exe.root_module.linkSystemLibrary("c", .{});
-    }
+    // Link libc on all platforms — required for C stdlib functions
+    exe.root_module.linkSystemLibrary("c", .{});
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);

@@ -1,10 +1,11 @@
 #!/bin/bash
 # Workaround for macOS 26.4+ where Xcode SDK's libSystem.tbd only exports
-# arm64e symbols (not arm64).  The CommandLineTools 15.x SDK still ships
-# arm64 in libSystem.tbd, so we intercept the SDK path lookup that zig
-# performs via `xcrun --sdk macosx --show-sdk-path`.
+# arm64e symbols (not arm64). The repo's zig wrapper exports a
+# CommandLineTools SDK path so we can intercept the SDK lookup zig performs via
+# `xcrun --sdk macosx --show-sdk-path`.
 if [[ "$1" == "--sdk" && "$2" == "macosx" && "$3" == "--show-sdk-path" ]]; then
-    CLT_SDK="/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk"
+    DEFAULT_CLT_SDK="/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk"
+    CLT_SDK="${OVO_MACOS_SDKROOT:-${SDKROOT:-$DEFAULT_CLT_SDK}}"
     if [[ -d "$CLT_SDK" ]]; then
         echo "$CLT_SDK"
         exit 0

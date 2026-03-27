@@ -13,17 +13,21 @@ const exporter = ovo.translate.exporter;
 const cli_args = ovo.cli_args;
 const graph_renderer = ovo.graph.renderer;
 
-// Pull in inline tests from translate modules
+// Pull in inline tests from imported modules that carry local regression coverage.
 comptime {
+    _ = registry;
+    _ = parser;
+    _ = compiler;
     _ = importer;
     _ = exporter;
     _ = orchestrator;
+    _ = ovo.cli;
 }
 
 // ── Registry & Dispatch ─────────────────────────────────────────────
 
 test "registry contains full command surface" {
-    try std.testing.expectEqual(@as(usize, 21), registry.commands.len);
+    try std.testing.expectEqual(@as(usize, 22), registry.commands.len);
     for (registry.commands) |command| {
         try std.testing.expect(dispatch.hasHandler(command.name));
     }
@@ -72,7 +76,7 @@ test "zon parser captures targets and dependencies" {
         \\            .link = .{ "m" },
         \\        },
         \\        .demo_test = .{
-        \\            .type = .test,
+        \\            .type = .test_target,
         \\            .sources = .{ "tests/demo_test.cpp" },
         \\        },
         \\    },
@@ -116,6 +120,24 @@ test "zon parser defaults when optional fields absent" {
     try std.testing.expectEqualStrings("Debug", parsed.defaults.optimize);
     try std.testing.expectEqual(@as(usize, 0), parsed.targets.len);
     try std.testing.expectEqual(@as(usize, 0), parsed.dependencies.len);
+}
+
+test "zon parser rejects unsupported backend values" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    try std.testing.expectError(
+        error.InvalidBackend,
+        parser.parseBuildZon(arena.allocator(),
+            \\.{
+            \\    .name = "demo",
+            \\    .version = "1.0.0",
+            \\    .defaults = .{
+            \\        .backend = "bogus",
+            \\    },
+            \\}
+        ),
+    );
 }
 
 test "zon parser extracts all cpp_standard enum values" {
@@ -256,12 +278,16 @@ test "renderBuildZon round-trips through parser" {
 
 // ── Compiler Backend ────────────────────────────────────────────────
 
-test "parseBackend recognizes all backends" {
+test "parseBackend recognizes canonical names and common aliases" {
     const cases = [_]struct { input: []const u8, expected: ?compiler.backend.Backend }{
         .{ .input = "clang", .expected = .clang },
+        .{ .input = "clang++", .expected = .clang },
         .{ .input = "gcc", .expected = .gcc },
+        .{ .input = "G++", .expected = .gcc },
         .{ .input = "msvc", .expected = .msvc },
+        .{ .input = "cl", .expected = .msvc },
         .{ .input = "zigcc", .expected = .zigcc },
+        .{ .input = "Zig C++", .expected = .zigcc },
         .{ .input = "unknown", .expected = null },
     };
     for (cases) |case| {
@@ -275,6 +301,14 @@ test "backend label round-trips with parseBackend" {
         const lbl = compiler.backend.label(b);
         try std.testing.expectEqual(b, compiler.backend.parseBackend(lbl).?);
     }
+}
+
+test "backend validateLabel canonicalizes supported labels and rejects invalid ones" {
+    try std.testing.expectEqualStrings("zigcc", try compiler.backend.validateLabel("zigcc"));
+    try std.testing.expectEqualStrings("msvc", try compiler.backend.validateLabel("msvc"));
+    try std.testing.expectError(error.InvalidBackend, compiler.backend.validateLabel("bogus"));
+    try std.testing.expectEqualStrings("clang", compiler.backend.supportedBackendLabels()[0]);
+    try std.testing.expectEqualStrings("zigcc", compiler.backend.supportedBackendLabels()[3]);
 }
 
 // ── Build Orchestrator ──────────────────────────────────────────────
@@ -1050,6 +1084,27 @@ test "zon writer renders defines and cflags conditionally" {
     const out_without = try writer.renderBuildZon(alloc, proj_without);
     try std.testing.expect(std.mem.indexOf(u8, out_without, ".defines") == null);
     try std.testing.expect(std.mem.indexOf(u8, out_without, ".cflags") == null);
+}
+
+test "zon writer emits canonical test_target enum labels" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const targets = [_]project_mod.Target{.{
+        .name = "demo_test",
+        .kind = .test_target,
+        .sources = &.{"tests/main_test.cpp"},
+    }};
+    const project = project_mod.Project{
+        .name = "demo",
+        .version = "1.0.0",
+        .targets = &targets,
+    };
+
+    const output = try writer.renderBuildZon(alloc, project);
+    try std.testing.expect(std.mem.indexOf(u8, output, ".type = .test_target") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, ".type = .test,\n") == null);
 }
 
 test "defines and cflags round-trip through zon parser and writer" {

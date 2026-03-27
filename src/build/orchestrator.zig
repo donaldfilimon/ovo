@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const core = @import("../core/mod.zig");
+const compiler = @import("../compiler/mod.zig");
 const project_mod = @import("../core/project.zig");
 const zon = @import("../zon/mod.zig");
 const lockfile = @import("../package/lockfile.zig");
@@ -41,7 +42,7 @@ pub fn buildProject(allocator: std.mem.Allocator, options: BuildOptions) !BuildR
     errdefer artifacts.deinit(allocator);
 
     const optimize = options.optimize_override orelse project.defaults.optimize;
-    const backend = options.backend_override orelse project.defaults.backend;
+    const backend = try normalizeBackendLabel(options.backend_override orelse project.defaults.backend);
     const jobs = options.jobs;
     const quiet = options.quiet;
 
@@ -565,13 +566,16 @@ fn sourceToObjectPath(
     is_msvc: bool,
 ) ![]const u8 {
     const mangled = try allocator.dupe(u8, source);
+    defer allocator.free(mangled);
     for (mangled) |*c| {
         if (c.* == '/' or c.* == '\\' or c.* == ':' or c.* == '.') c.* = '_';
     }
-    var trimmed: []const u8 = mangled;
+    var trimmed = mangled;
     while (trimmed.len > 0 and trimmed[0] == '_') trimmed = trimmed[1..];
+    const stem = if (trimmed.len > 0) trimmed else "source";
+    const source_hash = std.hash.Wyhash.hash(0, source);
     const ext: []const u8 = if (is_msvc) ".obj" else ".o";
-    return std.fmt.allocPrint(allocator, "{s}/{s}{s}", .{ obj_dir, trimmed, ext });
+    return std.fmt.allocPrint(allocator, "{s}/{s}_{x}{s}", .{ obj_dir, stem, source_hash, ext });
 }
 
 fn removeStaleObjects(
@@ -591,6 +595,7 @@ fn removeStaleObjects(
         if (!std.mem.endsWith(u8, entry.name, obj_ext)) continue;
 
         const full_path = std.fmt.allocPrint(allocator, "{s}/{s}", .{ obj_dir, entry.name }) catch continue;
+        defer allocator.free(full_path);
 
         var is_expected = false;
         for (expected_objects) |expected| {
@@ -741,7 +746,7 @@ fn compileSources(
         var failed_count: usize = 0;
         for (all_argvs.items, 0..) |argv, di| {
             const start = nowNs();
-            const code = core.exec.runInherit(allocator, argv) catch {
+            const code = core.exec.runInherit(argv) catch {
                 failed_count += 1;
                 continue;
             };
@@ -885,7 +890,7 @@ fn compileAndLinkExecutable(
     }
 
     const link_start = nowNs();
-    const code = try core.exec.runInherit(allocator, argv.items);
+    const code = try core.exec.runInherit(argv.items);
     const link_elapsed = elapsedNs(link_start);
     if (code != 0) return error.CompileFailed;
     return .{ .compile_timings = result.timings, .link_elapsed_ns = link_elapsed };
@@ -912,12 +917,12 @@ fn compileSharedLibrary(
 
     // For shared libraries, add -fPIC to compile flags (non-MSVC)
     const compile_cflags: []const []const u8 = if (!is_msvc) blk: {
-        var extended: std.ArrayList([]const u8) = .empty;
-        errdefer extended.deinit(allocator);
-        try extended.append(allocator, "-fPIC");
-        for (cflags) |flag| try extended.append(allocator, flag);
-        break :blk extended.items;
+        const extended = try allocator.alloc([]const u8, cflags.len + 1);
+        extended[0] = "-fPIC";
+        @memcpy(extended[1 .. cflags.len + 1], cflags);
+        break :blk extended;
     } else cflags;
+    defer if (!is_msvc) allocator.free(compile_cflags);
 
     const result = try compileSources(allocator, sources, include_dirs, optimize, standard, backend, obj_dir, defines, compile_cflags, force, jobs);
 
@@ -942,7 +947,7 @@ fn compileSharedLibrary(
     }
 
     const link_start = nowNs();
-    const code = try core.exec.runInherit(allocator, argv.items);
+    const code = try core.exec.runInherit(argv.items);
     const link_elapsed = elapsedNs(link_start);
     if (code != 0) return error.CompileFailed;
     return .{ .compile_timings = result.timings, .link_elapsed_ns = link_elapsed };
@@ -977,7 +982,7 @@ fn compileStaticLibrary(
         try lib_argv.append(allocator, try std.fmt.allocPrint(allocator, "/OUT:{s}", .{output}));
         for (result.objects) |obj| try lib_argv.append(allocator, obj);
 
-        const lib_code = try core.exec.runInherit(allocator, lib_argv.items);
+        const lib_code = try core.exec.runInherit(lib_argv.items);
         if (lib_code != 0) return error.ArchiveFailed;
     } else {
         var ar_argv: std.ArrayList([]const u8) = .empty;
@@ -986,12 +991,16 @@ fn compileStaticLibrary(
         try ar_argv.append(allocator, output);
         for (result.objects) |obj| try ar_argv.append(allocator, obj);
 
-        const ar_code = try core.exec.runInherit(allocator, ar_argv.items);
+        const ar_code = try core.exec.runInherit(ar_argv.items);
         if (ar_code != 0) return error.ArchiveFailed;
     }
 
     const link_elapsed = elapsedNs(link_start);
     return .{ .compile_timings = result.timings, .link_elapsed_ns = link_elapsed };
+}
+
+fn normalizeBackendLabel(value: []const u8) ![]const u8 {
+    return compiler.backend.validateLabel(value) catch return error.UnsupportedCompilerBackend;
 }
 
 fn appendCompilerPrefix(
@@ -1191,6 +1200,14 @@ fn trimTrailingSlashes(value: []const u8) []const u8 {
     return value[0..end];
 }
 
+test "normalizeBackendLabel canonicalizes aliases and casing" {
+    try std.testing.expectEqualStrings("clang", try normalizeBackendLabel("Clang++"));
+    try std.testing.expectEqualStrings("gcc", try normalizeBackendLabel("G++"));
+    try std.testing.expectEqualStrings("msvc", try normalizeBackendLabel("cl"));
+    try std.testing.expectEqualStrings("zigcc", try normalizeBackendLabel("zig-cc"));
+    try std.testing.expectError(error.UnsupportedCompilerBackend, normalizeBackendLabel("wat"));
+}
+
 test "detectJobCount returns at least 1" {
     const count = detectJobCount();
     try std.testing.expect(count >= 1);
@@ -1243,11 +1260,39 @@ test "sourceToObjectPath produces stable path-derived names" {
     const alloc = arena.allocator();
 
     const path = try sourceToObjectPath(alloc, ".ovo/build/obj-app", "src/util/helper.cpp", false);
-    try std.testing.expectEqualStrings(".ovo/build/obj-app/src_util_helper_cpp.o", path);
+    const expected = try std.fmt.allocPrint(
+        alloc,
+        ".ovo/build/obj-app/src_util_helper_cpp_{x}.o",
+        .{std.hash.Wyhash.hash(0, "src/util/helper.cpp")},
+    );
+    try std.testing.expectEqualStrings(expected, path);
 
     const msvc = try sourceToObjectPath(alloc, ".ovo/build/obj-app", "src/main.cpp", true);
-    try std.testing.expectEqualStrings(".ovo/build/obj-app/src_main_cpp.obj", msvc);
+    const expected_msvc = try std.fmt.allocPrint(
+        alloc,
+        ".ovo/build/obj-app/src_main_cpp_{x}.obj",
+        .{std.hash.Wyhash.hash(0, "src/main.cpp")},
+    );
+    try std.testing.expectEqualStrings(expected_msvc, msvc);
 
     const dotslash = try sourceToObjectPath(alloc, "obj", "./src/a.cpp", false);
-    try std.testing.expectEqualStrings("obj/src_a_cpp.o", dotslash);
+    const expected_dotslash = try std.fmt.allocPrint(
+        alloc,
+        "obj/src_a_cpp_{x}.o",
+        .{std.hash.Wyhash.hash(0, "./src/a.cpp")},
+    );
+    try std.testing.expectEqualStrings(expected_dotslash, dotslash);
+}
+
+test "sourceToObjectPath disambiguates colliding sanitized stems" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const nested = try sourceToObjectPath(alloc, "obj", "src/util/helper.cpp", false);
+    const flat = try sourceToObjectPath(alloc, "obj", "src/util_helper.cpp", false);
+
+    try std.testing.expect(!std.mem.eql(u8, nested, flat));
+    try std.testing.expect(std.mem.indexOf(u8, nested, "src_util_helper_cpp_") != null);
+    try std.testing.expect(std.mem.indexOf(u8, flat, "src_util_helper_cpp_") != null);
 }

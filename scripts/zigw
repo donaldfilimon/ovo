@@ -1,0 +1,27 @@
+#!/bin/bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+DEFAULT_MACOS_SDKROOT="/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk"
+
+ZIG_BIN="$(command -v zig || true)"
+if [[ -z "${ZIG_BIN}" ]]; then
+    echo "error: zig not found in PATH" >&2
+    exit 1
+fi
+
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    MACOS_SDKROOT="${OVO_MACOS_SDKROOT:-${DEFAULT_MACOS_SDKROOT}}"
+    if [[ ! -d "${MACOS_SDKROOT}" ]]; then
+        echo "error: missing macOS SDK at '${MACOS_SDKROOT}'" >&2
+        echo "Set OVO_MACOS_SDKROOT to a valid CommandLineTools SDK path." >&2
+        exit 1
+    fi
+
+    export OVO_MACOS_SDKROOT="${MACOS_SDKROOT}"
+    export SDKROOT="${MACOS_SDKROOT}"
+    export PATH="${REPO_ROOT}/scripts:${PATH}"
+fi
+
+exec "${ZIG_BIN}" "$@"

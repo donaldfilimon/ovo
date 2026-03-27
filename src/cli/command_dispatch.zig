@@ -8,6 +8,7 @@ const handlers = @import("handlers.zig");
 const version = @import("../version.zig");
 
 const CommandId = enum {
+    version_cmd,
     new_cmd,
     init,
     build,
@@ -37,6 +38,7 @@ const CommandHandler = struct {
 };
 
 const command_handlers = [_]CommandHandler{
+    .{ .name = "version", .id = .version_cmd },
     .{ .name = "new", .id = .new_cmd },
     .{ .name = "init", .id = .init },
     .{ .name = "build", .id = .build },
@@ -179,6 +181,7 @@ fn dispatchCommand(
     };
 
     return switch (command_id) {
+        .version_cmd => handlers.handleVersion(ctx),
         .new_cmd => handlers.handleNew(ctx, command_args),
         .init => handlers.handleInit(ctx, command_args),
         .build => handlers.handleBuild(ctx, command_args, passthrough_args),

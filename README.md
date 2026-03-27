@@ -4,8 +4,8 @@ ZON-based package manager and build system for C/C++, designed as a modern repla
 
 ## Requirements
 
-- Zig `0.16.0` or newer (baseline: `0.16.0-dev.2682+02142a54d`)
-- Project-managed toolchain (`~/.zvm/bin/zig`) for local parity
+- Zig version pinned in `.zigversion` (currently `0.16.0-dev.2984+cb7d2b056`)
+- Use `./scripts/zigw` for source-checkout builds and verification
 
 ## Quick Start
 
@@ -27,21 +27,29 @@ From a source checkout of this repository, you can run the local launcher direct
 ./ovo build
 ```
 
+Use `./scripts/zigw` as the canonical Zig entrypoint for repository builds and
+verification. On macOS it applies the CommandLineTools 15.4 SDK workaround
+automatically and honors `OVO_MACOS_SDKROOT` when you need to override the SDK
+path.
+
 ## Build Steps
 
 ```bash
-zig build
-zig build zig-version-consistency
-zig build typecheck
-zig build unit-tests
-zig build cli-tests-smoke
-zig build cli-tests-deep
-zig build cli-tests-stress
-zig build cli-tests-integration
-zig build cli-tests-variations
-zig build cli-tests
-zig build cli-help-matrix
-zig build full-check
+./scripts/zigw build
+./scripts/zigw build zig-version-consistency
+./scripts/zigw build typecheck
+./scripts/zigw build unit-tests
+./scripts/zigw build cli-tests-smoke
+./scripts/zigw build cli-tests-deep
+./scripts/zigw build cli-tests-stress
+./scripts/zigw build cli-tests-integration
+./scripts/zigw build cli-tests-variations
+./scripts/zigw build cli-tests
+./scripts/zigw build cli-help-matrix
+./scripts/zigw build toolchain-doctor
+./scripts/zigw build gendocs -- --check --no-wasm --untracked-md
+./scripts/zigw build check-docs
+./scripts/zigw build full-check
 ```
 
 `cli-tests-variations` enforces a strict tool prerequisite check before running:
@@ -64,9 +72,10 @@ See `AGENTS.md` for detailed workflow orchestration guidelines.
 
 ### Basic
 
+- `ovo version`
 - `ovo new <relative_path>`
 - `ovo init`
-- `ovo build [target]`
+- `ovo build [--force] [-jN] [--jobs=N] [target]`
 - `ovo run [target] [-- args]`
 - `ovo test [pattern]`
 - `ovo clean`
@@ -74,10 +83,7 @@ See `AGENTS.md` for detailed workflow orchestration guidelines.
 
 ### Package Management
 
-- `ovo add <package> [version]`
-- `ovo add <package> --git <url>`
-- `ovo add <package> --path <path>`
-- `ovo add <package> --registry <version>`
+- `ovo add <package> [version] [--git <url>|--path <path>|--registry <version>]`
 - `ovo remove <package>`
 - `ovo fetch [--refresh]`
 - `ovo update [pkg]`
@@ -97,6 +103,8 @@ See `AGENTS.md` for detailed workflow orchestration guidelines.
 
 - `ovo import <format> [path]`
 - `ovo export <format> [output_path]`
+- Import formats: `cmake`, `meson`, `xcode`, `msbuild`
+- Export formats: `cmake`, `meson`, `xcode`, `msbuild`, `compile_commands.json`
 
 ### CMake Import Compatibility
 
@@ -121,6 +129,7 @@ See `AGENTS.md` for detailed workflow orchestration guidelines.
 
 ## Translation Notes
 
+- Backend aliases such as `clang++`, `g++`, `cl`, and `zig c++` are normalized to `clang`, `gcc`, `msvc`, and `zigcc` during builds.
 - Import defaults to `src/main.cpp` when no targets are detected.
 - Includes are merged from project-level and target-level include directives.
 - Declared C++ standards from supported commands are mapped to `defaults.cpp_standard`.

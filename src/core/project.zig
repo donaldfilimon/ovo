@@ -69,6 +69,15 @@ pub fn targetTypeLabel(kind: TargetType) []const u8 {
     };
 }
 
+pub fn targetTypeZonLabel(kind: TargetType) []const u8 {
+    return switch (kind) {
+        .executable => "executable",
+        .library_static => "library_static",
+        .library_shared => "library_shared",
+        .test_target => "test_target",
+    };
+}
+
 pub fn parseCppStandard(value: []const u8) ?CppStandard {
     if (std.mem.eql(u8, value, "c89")) return .c89;
     if (std.mem.eql(u8, value, "c99")) return .c99;

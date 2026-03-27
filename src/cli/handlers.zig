@@ -1,5 +1,7 @@
+const builtin = @import("builtin");
 const std = @import("std");
 const Context = @import("context.zig").Context;
+const cli_registry = @import("command_registry.zig");
 const scaffold = @import("scaffold.zig");
 const core = @import("../core/mod.zig");
 const project_mod = @import("../core/project.zig");
@@ -8,6 +10,7 @@ const package = @import("../package/mod.zig");
 const source_spec = @import("../package/source_spec.zig");
 const translate = @import("../translate/mod.zig");
 const graph = @import("../graph/mod.zig");
+const version = @import("../version.zig");
 const testing = std.testing;
 
 const ProjectPathValidationError = error{
@@ -16,6 +19,24 @@ const ProjectPathValidationError = error{
     TraversalSegment,
     CurrentDirectorySegment,
 };
+
+const NoArgCommandValidationError = error{UnexpectedArguments};
+
+fn validateNoArgs(command_args: []const []const u8) NoArgCommandValidationError!void {
+    if (command_args.len != 0) return error.UnexpectedArguments;
+}
+
+fn ensureNoArgs(ctx: *Context, command_name: []const u8, command_args: []const []const u8) !void {
+    validateNoArgs(command_args) catch {
+        try ctx.printErr("error: {s} does not take positional arguments\n", .{command_name});
+        return error.UnexpectedArguments;
+    };
+}
+
+pub fn handleVersion(ctx: *Context) !u8 {
+    try ctx.print("ovo {s}\n", .{version.string});
+    return 0;
+}
 
 pub fn handleNew(ctx: *Context, command_args: []const []const u8) !u8 {
     if (command_args.len == 0) {
@@ -109,6 +130,9 @@ pub fn handleBuild(ctx: *Context, command_args: []const []const u8, _: []const [
             return 2;
         } else if (target_name == null) {
             target_name = arg;
+        } else {
+            try ctx.printErr("error: build accepts at most one target argument\n", .{});
+            return 2;
         }
     }
     const result = try build.orchestrator.buildProject(ctx.allocator, .{
@@ -126,6 +150,11 @@ pub fn handleBuild(ctx: *Context, command_args: []const []const u8, _: []const [
 }
 
 pub fn handleRun(ctx: *Context, command_args: []const []const u8, passthrough_args: []const []const u8) !u8 {
+    if (command_args.len > 1) {
+        try ctx.printErr("error: run accepts at most one target argument before '--'\n", .{});
+        return 2;
+    }
+
     var requested_target = if (command_args.len > 0) command_args[0] else null;
     if (requested_target == null) {
         const project = try build.orchestrator.loadProject(ctx.allocator);
@@ -148,11 +177,16 @@ pub fn handleRun(ctx: *Context, command_args: []const []const u8, passthrough_ar
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.append(ctx.allocator, artifact.path);
     for (passthrough_args) |arg| try argv.append(ctx.allocator, arg);
-    const code = try core.exec.runInherit(ctx.allocator, argv.items);
+    const code = try core.exec.runInherit(argv.items);
     return code;
 }
 
 pub fn handleTest(ctx: *Context, command_args: []const []const u8, _: []const []const u8) !u8 {
+    if (command_args.len > 1) {
+        try ctx.printErr("error: test accepts at most one pattern argument\n", .{});
+        return 2;
+    }
+
     const pattern = if (command_args.len > 0) command_args[0] else null;
     const result = try build.orchestrator.buildProject(ctx.allocator, .{
         .target_pattern = pattern,
@@ -163,21 +197,23 @@ pub fn handleTest(ctx: *Context, command_args: []const []const u8, _: []const []
     for (result.artifacts) |artifact| {
         var argv: std.ArrayList([]const u8) = .empty;
         try argv.append(ctx.allocator, artifact.path);
-        const code = try core.exec.runInherit(ctx.allocator, argv.items);
+        const code = try core.exec.runInherit(argv.items);
         if (code != 0) return code;
     }
     try ctx.print("test: executed {d} test target(s)\n", .{result.artifacts.len});
     return 0;
 }
 
-pub fn handleClean(ctx: *Context, _: []const []const u8) !u8 {
+pub fn handleClean(ctx: *Context, command_args: []const []const u8) !u8 {
+    ensureNoArgs(ctx, "clean", command_args) catch return 2;
     try core.fs.removeTreeIfExists(".ovo");
     try core.fs.deleteFileIfExists("ovo.lock.zon");
     try ctx.print("clean: removed .ovo and transient lock artifacts\n", .{});
     return 0;
 }
 
-pub fn handleInstall(ctx: *Context, _: []const []const u8) !u8 {
+pub fn handleInstall(ctx: *Context, command_args: []const []const u8) !u8 {
+    ensureNoArgs(ctx, "install", command_args) catch return 2;
     const result = try build.orchestrator.buildProject(ctx.allocator, .{
         .optimize_override = ctx.profile,
     });
@@ -214,7 +250,7 @@ pub fn handleAdd(ctx: *Context, command_args: []const []const u8) !u8 {
                 try ctx.printErr("error: mutually exclusive source flags are not allowed\n", .{});
             },
             error.SourceAndPositionalVersion => {
-                try ctx.printErr("error: source flag cannot be combined with positional version\n", .{});
+                try ctx.printErr("error: source flag cannot be combined with positional version_str\n", .{});
             },
             error.TooManyArguments => {
                 try ctx.printErr("error: too many arguments for add\n", .{});
@@ -224,8 +260,8 @@ pub fn handleAdd(ctx: *Context, command_args: []const []const u8) !u8 {
     };
 
     var manager = package.manager.PackageManager.init(ctx.allocator);
-    try manager.addWithSource(parsed.package_name, parsed.version, parsed.source);
-    if (parsed.version) |v| {
+    try manager.addWithSource(parsed.package_name, parsed.version_str, parsed.source);
+    if (parsed.version_str) |v| {
         try ctx.print("add: {s} {s}\n", .{ parsed.package_name, v });
     } else {
         try ctx.print("add: {s}\n", .{parsed.package_name});
@@ -236,6 +272,10 @@ pub fn handleAdd(ctx: *Context, command_args: []const []const u8) !u8 {
 pub fn handleRemove(ctx: *Context, command_args: []const []const u8) !u8 {
     if (command_args.len == 0) {
         try ctx.printErr("error: missing package name\n", .{});
+        return 2;
+    }
+    if (command_args.len > 1) {
+        try ctx.printErr("error: remove takes exactly one package name\n", .{});
         return 2;
     }
     var manager = package.manager.PackageManager.init(ctx.allocator);
@@ -266,6 +306,11 @@ pub fn handleFetch(ctx: *Context, command_args: []const []const u8) !u8 {
 }
 
 pub fn handleUpdate(ctx: *Context, command_args: []const []const u8) !u8 {
+    if (command_args.len > 1) {
+        try ctx.printErr("error: update accepts at most one dependency name\n", .{});
+        return 2;
+    }
+
     var manager = package.manager.PackageManager.init(ctx.allocator);
     const dep = if (command_args.len > 0) command_args[0] else null;
     try manager.update(dep);
@@ -277,7 +322,8 @@ pub fn handleUpdate(ctx: *Context, command_args: []const []const u8) !u8 {
     return 0;
 }
 
-pub fn handleLock(ctx: *Context, _: []const []const u8) !u8 {
+pub fn handleLock(ctx: *Context, command_args: []const []const u8) !u8 {
+    ensureNoArgs(ctx, "lock", command_args) catch return 2;
     var manager = package.manager.PackageManager.init(ctx.allocator);
     try manager.lock();
     try ctx.print("lock: wrote ovo.lock.zon\n", .{});
@@ -286,7 +332,7 @@ pub fn handleLock(ctx: *Context, _: []const []const u8) !u8 {
 
 const ParsedAddArgs = struct {
     package_name: []const u8,
-    version: ?[]const u8,
+    version_str: ?[]const u8,
     source: ?source_spec.SourceKind,
 };
 
@@ -303,7 +349,7 @@ fn parseAddCommandArgs(command_args: []const []const u8) AddParseError!ParsedAdd
     if (command_args.len == 0) return AddParseError.MissingPackageName;
 
     var package_name: ?[]const u8 = null;
-    var version: ?[]const u8 = null;
+    var version_str: ?[]const u8 = null;
     var source: ?source_spec.SourceKind = null;
 
     var i: usize = 0;
@@ -314,27 +360,27 @@ fn parseAddCommandArgs(command_args: []const []const u8) AddParseError!ParsedAdd
             if (source != null) return AddParseError.MutuallyExclusiveSourceFlags;
             const value = arg["--git=".len..];
             if (value.len == 0) return AddParseError.MissingSourceValue;
-            if (version != null) return AddParseError.SourceAndPositionalVersion;
+            if (version_str != null) return AddParseError.SourceAndPositionalVersion;
             source = .git;
-            version = value;
+            version_str = value;
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--path=")) {
             if (source != null) return AddParseError.MutuallyExclusiveSourceFlags;
             const value = arg["--path=".len..];
             if (value.len == 0) return AddParseError.MissingSourceValue;
-            if (version != null) return AddParseError.SourceAndPositionalVersion;
+            if (version_str != null) return AddParseError.SourceAndPositionalVersion;
             source = .local;
-            version = value;
+            version_str = value;
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--registry=")) {
             if (source != null) return AddParseError.MutuallyExclusiveSourceFlags;
             const value = arg["--registry=".len..];
             if (value.len == 0) return AddParseError.MissingSourceValue;
-            if (version != null) return AddParseError.SourceAndPositionalVersion;
+            if (version_str != null) return AddParseError.SourceAndPositionalVersion;
             source = .registry;
-            version = value;
+            version_str = value;
             continue;
         }
         if (std.mem.eql(u8, arg, "--git")) {
@@ -342,9 +388,9 @@ fn parseAddCommandArgs(command_args: []const []const u8) AddParseError!ParsedAdd
             if (i + 1 >= command_args.len) return AddParseError.MissingSourceValue;
             const value = command_args[i + 1];
             if (value.len == 0) return AddParseError.MissingSourceValue;
-            if (version != null) return AddParseError.SourceAndPositionalVersion;
+            if (version_str != null) return AddParseError.SourceAndPositionalVersion;
             source = .git;
-            version = value;
+            version_str = value;
             i += 1;
             continue;
         }
@@ -353,9 +399,9 @@ fn parseAddCommandArgs(command_args: []const []const u8) AddParseError!ParsedAdd
             if (i + 1 >= command_args.len) return AddParseError.MissingSourceValue;
             const value = command_args[i + 1];
             if (value.len == 0) return AddParseError.MissingSourceValue;
-            if (version != null) return AddParseError.SourceAndPositionalVersion;
+            if (version_str != null) return AddParseError.SourceAndPositionalVersion;
             source = .local;
-            version = value;
+            version_str = value;
             i += 1;
             continue;
         }
@@ -364,9 +410,9 @@ fn parseAddCommandArgs(command_args: []const []const u8) AddParseError!ParsedAdd
             if (i + 1 >= command_args.len) return AddParseError.MissingSourceValue;
             const value = command_args[i + 1];
             if (value.len == 0) return AddParseError.MissingSourceValue;
-            if (version != null) return AddParseError.SourceAndPositionalVersion;
+            if (version_str != null) return AddParseError.SourceAndPositionalVersion;
             source = .registry;
-            version = value;
+            version_str = value;
             i += 1;
             continue;
         }
@@ -377,8 +423,8 @@ fn parseAddCommandArgs(command_args: []const []const u8) AddParseError!ParsedAdd
             package_name = arg;
             continue;
         }
-        if (source == null and version == null) {
-            version = arg;
+        if (source == null and version_str == null) {
+            version_str = arg;
             continue;
         }
         return AddParseError.TooManyArguments;
@@ -387,7 +433,7 @@ fn parseAddCommandArgs(command_args: []const []const u8) AddParseError!ParsedAdd
     if (package_name == null) return AddParseError.MissingPackageName;
     return .{
         .package_name = package_name.?,
-        .version = version,
+        .version_str = version_str,
         .source = source,
     };
 }
@@ -399,7 +445,7 @@ test "add argument parser supports source flags and rejects conflicts" {
     try testing.expectError(AddParseError.MutuallyExclusiveSourceFlags, parseAddCommandArgs(&.{ "pkg", "--git=https://example.com/a.git", "--registry=latest" }));
     try testing.expectError(AddParseError.MissingSourceValue, parseAddCommandArgs(&.{ "pkg", "--path" }));
     try testing.expectError(AddParseError.UnknownFlag, parseAddCommandArgs(&.{ "pkg", "--bad" }));
-    try testing.expectEqual(@as(?[]const u8, "1.2.3"), parsed.version);
+    try testing.expectEqual(@as(?[]const u8, "1.2.3"), parsed.version_str);
     try testing.expectEqual(source_spec.SourceKind.local, (try parseAddCommandArgs(&.{ "pkg", "--path", "./local" })).source.?);
 }
 
@@ -433,14 +479,34 @@ test "project name helpers derive deterministic scaffold metadata" {
     try testing.expectEqualStrings("app", normalized_symbols);
 }
 
-pub fn handleDeps(ctx: *Context, _: []const []const u8) !u8 {
+test "selected CLI handlers reject extra positional arguments" {
+    var ctx = Context{
+        .allocator = testing.allocator,
+        .quiet = true,
+        .suppress_stderr = true,
+    };
+
+    try testing.expectEqual(@as(u8, 2), try handleBuild(&ctx, &.{ "app", "extra" }, &.{}));
+    try testing.expectEqual(@as(u8, 2), try handleRun(&ctx, &.{ "app", "extra" }, &.{}));
+    try testing.expectEqual(@as(u8, 2), try handleTest(&ctx, &.{ "unit", "extra" }, &.{}));
+    try testing.expectEqual(@as(u8, 2), try handleRemove(&ctx, &.{ "fmt", "extra" }));
+    try testing.expectEqual(@as(u8, 2), try handleUpdate(&ctx, &.{ "fmt", "extra" }));
+    try testing.expectEqual(@as(u8, 2), try handleDoc(&ctx, &.{"extra"}));
+    try testing.expectEqual(@as(u8, 2), try handleDoctor(&ctx, &.{"extra"}));
+    try testing.expectEqual(@as(u8, 2), try handleInfo(&ctx, &.{"extra"}));
+}
+
+pub fn handleDeps(ctx: *Context, command_args: []const []const u8) !u8 {
+    ensureNoArgs(ctx, "deps", command_args) catch return 2;
     var manager = package.manager.PackageManager.init(ctx.allocator);
     const summary = try manager.dependencySummary();
     try ctx.print("{s}\n", .{summary});
     return 0;
 }
 
-pub fn handleDoc(ctx: *Context, _: []const []const u8) !u8 {
+pub fn handleDoc(ctx: *Context, command_args: []const []const u8) !u8 {
+    ensureNoArgs(ctx, "doc", command_args) catch return 2;
+
     const project = try build.orchestrator.loadProject(ctx.allocator);
     try core.fs.ensureDir("docs");
     var output: std.ArrayList(u8) = .empty;
@@ -456,20 +522,67 @@ pub fn handleDoc(ctx: *Context, _: []const []const u8) !u8 {
     }
 
     try core.fs.writeFile("docs/project-reference.md", output.items);
+
+    const command_reference = try cli_registry.renderCommandReferenceMarkdown(ctx.allocator);
+    defer ctx.allocator.free(command_reference);
+    try core.fs.writeFile("docs/command-reference.md", command_reference);
+
     try ctx.print("doc: wrote docs/project-reference.md\n", .{});
+    try ctx.print("doc: wrote docs/command-reference.md\n", .{});
     return 0;
 }
 
-pub fn handleDoctor(ctx: *Context, _: []const []const u8) !u8 {
-    const required_version_raw = core.fs.readFileAlloc(ctx.allocator, ".zigversion") catch null;
-    const required_version: []const u8 = if (required_version_raw) |bytes|
+const DoctorVersionStatus = struct {
+    active_version: []const u8,
+    matches_required: bool,
+};
+
+fn evaluateDoctorVersion(required_version: []const u8, captured_stdout: []const u8) DoctorVersionStatus {
+    const active_version = std.mem.trim(u8, captured_stdout, " \t\r\n");
+    return .{
+        .active_version = active_version,
+        .matches_required = std.mem.eql(u8, active_version, required_version),
+    };
+}
+
+pub fn handleDoctor(ctx: *Context, command_args: []const []const u8) !u8 {
+    ensureNoArgs(ctx, "doctor", command_args) catch return 2;
+    const required_version_str_raw = core.fs.readFileAlloc(ctx.allocator, ".zigversion") catch null;
+    defer if (required_version_str_raw) |bytes| ctx.allocator.free(bytes);
+    const required_version_str: []const u8 = if (required_version_str_raw) |bytes|
         std.mem.trim(u8, bytes, " \t\r\n")
     else
-        "0.16.0";
-    try ctx.print("doctor: required_zig={s}\n", .{required_version});
-    const zig_version_code = core.exec.runInherit(ctx.allocator, &.{ "zig", "version" }) catch 1;
-    if (zig_version_code != 0) {
-        try ctx.printErr("doctor: unable to run `zig version`\n", .{});
+        builtin.zig_version_string;
+    try ctx.print("doctor: required_zig={s}\n", .{required_version_str});
+
+    var zig_version_ok = false;
+    const zig_version_result = core.exec.runCapture(ctx.allocator, &.{ "zig", "version" }) catch |err| blk: {
+        try ctx.printErr("doctor: unable to run `zig version` ({s})\n", .{@errorName(err)});
+        break :blk null;
+    };
+    if (zig_version_result) |result| {
+        defer ctx.allocator.free(result.stdout);
+        defer ctx.allocator.free(result.stderr);
+
+        if (result.code != 0) {
+            try ctx.printErr("doctor: `zig version` exited with code {d}\n", .{result.code});
+            const stderr_text = std.mem.trim(u8, result.stderr, " \t\r\n");
+            if (stderr_text.len > 0) {
+                try ctx.printErr("doctor: zig stderr={s}\n", .{stderr_text});
+            }
+        } else {
+            const status = evaluateDoctorVersion(required_version_str, result.stdout);
+            try ctx.print("doctor: active_zig={s}\n", .{status.active_version});
+            if (status.matches_required) {
+                try ctx.print("doctor: zig_version_match ok\n", .{});
+                zig_version_ok = true;
+            } else {
+                try ctx.printErr(
+                    "doctor: zig_version_match fail (required {s}, active {s})\n",
+                    .{ required_version_str, status.active_version },
+                );
+            }
+        }
     }
 
     const ToolCheck = struct {
@@ -490,7 +603,7 @@ pub fn handleDoctor(ctx: *Context, _: []const []const u8) !u8 {
     var missing_required: usize = 0;
     var missing_optional: usize = 0;
     for (tools) |tool| {
-        const available = core.exec.commandExists(ctx.allocator, tool.name);
+        const available = core.exec.commandExists(tool.name);
         if (available) {
             try ctx.print("doctor: {s} ok\n", .{tool.name});
             continue;
@@ -506,11 +619,22 @@ pub fn handleDoctor(ctx: *Context, _: []const []const u8) !u8 {
     if (missing_optional > 0) {
         try ctx.print("doctor: optional tools missing ({d}); related subcommands may use fallbacks\n", .{missing_optional});
     }
-    return if (zig_version_code == 0 and missing_required == 0) 0 else 1;
+    return if (zig_version_ok and missing_required == 0) 0 else 1;
 }
 
-pub fn handleFmt(ctx: *Context, _: []const []const u8) !u8 {
-    if (!core.exec.commandExists(ctx.allocator, "clang-format")) {
+test "doctor version evaluation trims zig output and detects mismatches" {
+    const matching = evaluateDoctorVersion("0.16.0-dev.2984+cb7d2b056", "0.16.0-dev.2984+cb7d2b056\n");
+    try testing.expectEqualStrings("0.16.0-dev.2984+cb7d2b056", matching.active_version);
+    try testing.expect(matching.matches_required);
+
+    const mismatch = evaluateDoctorVersion("0.16.0-dev.2984+cb7d2b056", "0.16.0-dev.9999+deadbeef\r\n");
+    try testing.expectEqualStrings("0.16.0-dev.9999+deadbeef", mismatch.active_version);
+    try testing.expect(!mismatch.matches_required);
+}
+
+pub fn handleFmt(ctx: *Context, command_args: []const []const u8) !u8 {
+    ensureNoArgs(ctx, "fmt", command_args) catch return 2;
+    if (!core.exec.commandExists("clang-format")) {
         try ctx.printErr("error: clang-format not found in PATH\n", .{});
         return 2;
     }
@@ -520,7 +644,7 @@ pub fn handleFmt(ctx: *Context, _: []const []const u8) !u8 {
         for (target.sources) |pattern| {
             const sources = try build.orchestrator.resolveSourcePattern(ctx.allocator, pattern);
             for (sources) |source| {
-                const code = try core.exec.runInherit(ctx.allocator, &.{ "clang-format", "-i", source });
+                const code = try core.exec.runInherit(&.{ "clang-format", "-i", source });
                 if (code != 0) return code;
                 any = true;
             }
@@ -534,13 +658,14 @@ pub fn handleFmt(ctx: *Context, _: []const []const u8) !u8 {
     return 0;
 }
 
-pub fn handleLint(ctx: *Context, _: []const []const u8) !u8 {
+pub fn handleLint(ctx: *Context, command_args: []const []const u8) !u8 {
+    ensureNoArgs(ctx, "lint", command_args) catch return 2;
     const project = try build.orchestrator.loadProject(ctx.allocator);
-    if (core.exec.commandExists(ctx.allocator, "clang-tidy")) {
+    if (core.exec.commandExists("clang-tidy")) {
         return runClangTidyLint(ctx, project);
     }
 
-    const fallback = detectLintFallback(ctx.allocator) orelse {
+    const fallback = detectLintFallback() orelse {
         try ctx.printErr("error: clang-tidy not found and no fallback compiler available\n", .{});
         return 2;
     };
@@ -553,20 +678,20 @@ const LintFallback = struct {
     command_prefix: []const []const u8,
 };
 
-fn detectLintFallback(allocator: std.mem.Allocator) ?LintFallback {
-    if (core.exec.commandExists(allocator, "clang++")) {
+fn detectLintFallback() ?LintFallback {
+    if (core.exec.commandExists("clang++")) {
         return .{
             .label = "clang++",
             .command_prefix = &.{"clang++"},
         };
     }
-    if (core.exec.commandExists(allocator, "g++")) {
+    if (core.exec.commandExists("g++")) {
         return .{
             .label = "g++",
             .command_prefix = &.{"g++"},
         };
     }
-    if (core.exec.commandExists(allocator, "zig")) {
+    if (core.exec.commandExists("zig")) {
         return .{
             .label = "zig c++",
             .command_prefix = &.{ "zig", "c++" },
@@ -595,7 +720,7 @@ fn runClangTidyLint(ctx: *Context, project: project_mod.Project) !u8 {
                     target.cflags,
                 );
 
-                const code = try core.exec.runInherit(ctx.allocator, argv.items);
+                const code = try core.exec.runInherit(argv.items);
                 if (code != 0) return code;
                 any = true;
             }
@@ -632,7 +757,7 @@ fn runFallbackLint(ctx: *Context, project: project_mod.Project, fallback: LintFa
                 );
                 try argv.append(ctx.allocator, source);
 
-                const code = try core.exec.runInherit(ctx.allocator, argv.items);
+                const code = try core.exec.runInherit(argv.items);
                 if (code != 0) return code;
                 any = true;
             }
@@ -680,7 +805,8 @@ fn lintStandardFlag(standard: project_mod.CppStandard) []const u8 {
     };
 }
 
-pub fn handleInfo(ctx: *Context, _: []const []const u8) !u8 {
+pub fn handleInfo(ctx: *Context, command_args: []const []const u8) !u8 {
+    ensureNoArgs(ctx, "info", command_args) catch return 2;
     const project = try build.orchestrator.loadProject(ctx.allocator);
     try ctx.print("project: {s}\n", .{project.name});
     try ctx.print("version: {s}\n", .{project.version});

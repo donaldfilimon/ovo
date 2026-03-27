@@ -2,33 +2,21 @@
 
 ## Overview
 
-OVO uses a structured workflow for non-trivial engineering tasks (3+ steps or architectural decisions).
+OVO tracks non-trivial work directly in `tasks/todo.md` and `tasks/lessons.md`.
 
 ## Lifecycle
 
-1. **Initialize**: Create `tasks/todo.md` with objective and checklist
-2. **Implement**: Execute work, tracking progress in todo.md
-3. **Verify**: Run verification before marking complete
-4. **Document**: Update lessons after user corrections
+1. **Review lessons**: Check `tasks/lessons.md` before planning follow-up work.
+2. **Plan**: Add objective, checklist, verification, and review sections to `tasks/todo.md`.
+3. **Implement**: Make the smallest defensible change set and keep the checklist current.
+4. **Verify**: Run the relevant `./scripts/zigw build ...` gates before marking the task complete.
+5. **Document**: Update `tasks/lessons.md` after user corrections.
 
-## Workflow Commands
+## Task Files
 
-```bash
-# Initialize workflow
-./scripts/workflow.sh init "<objective>"
+### `tasks/todo.md`
 
-# Check workflow status
-./scripts/workflow.sh check
-
-# Log lessons learned
-./scripts/workflow.sh lesson --task "<task>" --correction "<correction>" --root-cause "<root cause>" --rule "<prevention rule>" --signal "<detection signal>"
-```
-
-## Task Management
-
-### tasks/todo.md
-
-Track work with checkable items:
+Track work with checkable items and verification evidence:
 
 ```markdown
 ## Objective
@@ -39,40 +27,34 @@ Track work with checkable items:
 - [x] Task 2 (completed)
 - [ ] Task 3
 
-## Verification Evidence
-<output from verification steps>
+## Verification
+- `./scripts/zigw build typecheck` — pass
+- `./scripts/zigw build unit-tests` — pass
 ```
 
-### tasks/lessons.md
+### `tasks/lessons.md`
 
 Capture learnings after corrections:
 
 ```markdown
-## <date> - <task>
-- **Correction**: What was wrong
-- **Root Cause**: Why it happened
-- **Rule**: Prevention rule
-- **Signal**: How to detect early
+- Correction pattern and root cause
+- Prevention rule for future turns
 ```
 
-## Plan Mode
+## Suggested Verification Flow
 
-Enter plan mode for:
-- 3+ step tasks
-- Architectural decisions
-- Verification steps
-- Non-trivial changes
+Use the smallest gate that proves the change:
 
-Plan mode workflow:
-1. Write detailed specs upfront
-2. Present plan for approval
-3. Execute implementation
-4. Verify results
+```bash
+./scripts/zigw build cli-tests-smoke
+./scripts/zigw build typecheck
+./scripts/zigw build unit-tests
+./scripts/zigw build full-check
+```
 
 ## Self-Improvement Loop
 
 After ANY correction from the user:
-1. Update `tasks/lessons.md` with the pattern
-2. Write rules that prevent the same mistake
-3. Review lessons at session start for relevant project
-4. Capture root causes, not just symptoms
+1. Update `tasks/lessons.md` with the pattern.
+2. Write a rule that prevents the same mistake.
+3. Re-check the current repo state before continuing.

@@ -23,7 +23,7 @@ pub fn renderBuildZon(allocator: std.mem.Allocator, project: project_mod.Project
     try output.appendSlice(allocator, "    .targets = .{\n");
     for (project.targets) |target| {
         try output.print(allocator, "        .{s} = .{{\n", .{target.name});
-        try output.print(allocator, "            .type = .{s},\n", .{project_mod.targetTypeLabel(target.kind)});
+        try output.print(allocator, "            .type = .{s},\n", .{project_mod.targetTypeZonLabel(target.kind)});
         try output.appendSlice(allocator, "            .sources = .{\n");
         for (target.sources) |source| {
             try output.print(allocator, "                \"{s}\",\n", .{source});

@@ -1,4 +1,5 @@
 const std = @import("std");
+const testing = std.testing;
 
 pub const CommandGroup = enum {
     basic,
@@ -16,6 +17,13 @@ pub const CommandSpec = struct {
 };
 
 pub const commands = [_]CommandSpec{
+    .{
+        .name = "version",
+        .summary = "Show version information",
+        .usage = "ovo version",
+        .group = .basic,
+        .examples = &.{"ovo version"},
+    },
     .{
         .name = "new",
         .summary = "Create a new project",
@@ -181,6 +189,22 @@ pub const commands = [_]CommandSpec{
     },
 };
 
+const group_order = [_]CommandGroup{ .basic, .package, .tooling, .translation };
+
+const GlobalOption = struct {
+    option: []const u8,
+    description: []const u8,
+};
+
+const global_options = [_]GlobalOption{
+    .{ .option = "--help, -h", .description = "Show help" },
+    .{ .option = "--version, -V", .description = "Show version" },
+    .{ .option = "--verbose", .description = "Enable verbose output" },
+    .{ .option = "--quiet", .description = "Minimize output" },
+    .{ .option = "--cwd <path>", .description = "Override working directory" },
+    .{ .option = "--profile <name>", .description = "Build profile override" },
+};
+
 pub fn find(name: []const u8) ?CommandSpec {
     for (commands) |spec| {
         if (std.mem.eql(u8, spec.name, name)) {
@@ -197,4 +221,106 @@ pub fn groupLabel(group: CommandGroup) []const u8 {
         .tooling => "Tooling",
         .translation => "Project Translation",
     };
+}
+
+pub fn renderCommandReferenceMarkdown(allocator: std.mem.Allocator) ![]u8 {
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
+
+    try output.appendSlice(allocator, "# Command Reference\n");
+    for (group_order) |group| {
+        try appendGroupSection(allocator, &output, group);
+    }
+    try appendSelectedExamples(allocator, &output);
+    try appendGlobalOptions(allocator, &output);
+    return try output.toOwnedSlice(allocator);
+}
+
+fn appendGroupSection(
+    allocator: std.mem.Allocator,
+    output: *std.ArrayList(u8),
+    group: CommandGroup,
+) !void {
+    try output.print(allocator, "\n## {s}\n\n", .{groupSectionHeading(group)});
+    try output.appendSlice(allocator, "| Command | Description | Usage |\n");
+    try output.appendSlice(allocator, "|---------|-------------|-------|\n");
+
+    for (commands) |command| {
+        if (command.group != group) continue;
+
+        try output.appendSlice(allocator, "| `");
+        try output.appendSlice(allocator, command.name);
+        try output.appendSlice(allocator, "` | ");
+        try appendEscapedTableCell(allocator, output, command.summary);
+        try output.appendSlice(allocator, " | `");
+        try appendEscapedTableCell(allocator, output, command.usage);
+        try output.appendSlice(allocator, "` |\n");
+    }
+}
+
+fn appendSelectedExamples(allocator: std.mem.Allocator, output: *std.ArrayList(u8)) !void {
+    var wrote_header = false;
+    for (commands) |command| {
+        if (command.examples.len <= 1) continue;
+        if (!wrote_header) {
+            try output.appendSlice(allocator, "\n## Selected Examples\n");
+            wrote_header = true;
+        }
+
+        try output.print(allocator, "\n### `{s}`\n\n```bash\n", .{command.name});
+        for (command.examples) |example| {
+            try output.print(allocator, "{s}\n", .{example});
+        }
+        try output.appendSlice(allocator, "```\n");
+    }
+}
+
+fn appendGlobalOptions(allocator: std.mem.Allocator, output: *std.ArrayList(u8)) !void {
+    try output.appendSlice(allocator, "\n## Global Options\n\n");
+    try output.appendSlice(allocator, "| Option | Description |\n");
+    try output.appendSlice(allocator, "|--------|-------------|\n");
+
+    for (global_options) |option| {
+        try output.appendSlice(allocator, "| `");
+        try output.appendSlice(allocator, option.option);
+        try output.appendSlice(allocator, "` | ");
+        try appendEscapedTableCell(allocator, output, option.description);
+        try output.appendSlice(allocator, " |\n");
+    }
+}
+
+fn appendEscapedTableCell(
+    allocator: std.mem.Allocator,
+    output: *std.ArrayList(u8),
+    value: []const u8,
+) !void {
+    for (value) |char| {
+        if (char == '|') {
+            try output.appendSlice(allocator, "\\|");
+        } else {
+            try output.append(allocator, char);
+        }
+    }
+}
+
+fn groupSectionHeading(group: CommandGroup) []const u8 {
+    return switch (group) {
+        .basic => "Basic Commands",
+        .package => "Package Management",
+        .tooling => "Tooling",
+        .translation => "Translation",
+    };
+}
+
+test "renderCommandReferenceMarkdown includes escaped usage and global options" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const markdown = try renderCommandReferenceMarkdown(arena.allocator());
+    try testing.expect(std.mem.indexOf(u8, markdown, "# Command Reference") != null);
+    try testing.expect(std.mem.indexOf(u8, markdown, "ovo version") != null);
+    try testing.expect(std.mem.indexOf(u8, markdown, "ovo add <package> [version] [--git <url>\\|--path <path>\\|--registry <version>]") != null);
+    try testing.expect(std.mem.indexOf(u8, markdown, "ovo tree [--format=ascii\\|dot\\|json\\|mermaid] [--target=name]") != null);
+    try testing.expect(std.mem.indexOf(u8, markdown, "## Global Options") != null);
+    try testing.expect(std.mem.indexOf(u8, markdown, "## Selected Examples") != null);
 }

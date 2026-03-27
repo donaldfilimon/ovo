@@ -1,4 +1,5 @@
 const std = @import("std");
+const compiler_backend = @import("../compiler/backend.zig");
 const project_mod = @import("../core/project.zig");
 
 pub fn parseBuildZon(allocator: std.mem.Allocator, bytes: []const u8) !project_mod.Project {
@@ -11,13 +12,13 @@ pub fn parseBuildZon(allocator: std.mem.Allocator, bytes: []const u8) !project_m
 
     if (findObjectBlock(bytes, ".defaults")) |defaults_block| {
         if (extractEnumField(defaults_block, ".cpp_standard")) |cpp| {
-            project.defaults.cpp_standard = project_mod.parseCppStandard(cpp) orelse project.defaults.cpp_standard;
+            project.defaults.cpp_standard = project_mod.parseCppStandard(cpp) orelse return error.InvalidCppStandard;
         }
         if (extractStringField(defaults_block, ".optimize")) |optimize| {
             project.defaults.optimize = optimize;
         }
         if (extractStringField(defaults_block, ".backend")) |backend| {
-            project.defaults.backend = backend;
+            project.defaults.backend = compiler_backend.validateLabel(backend) catch return error.InvalidBackend;
         }
         if (extractStringField(defaults_block, ".output_dir")) |out_dir| {
             project.defaults.output_dir = out_dir;
@@ -41,7 +42,7 @@ fn parseTargets(allocator: std.mem.Allocator, bytes: []const u8) ![]const projec
             .kind = .executable,
         };
         if (extractEnumField(entry.body, ".type")) |kind| {
-            target.kind = project_mod.parseTargetType(kind) orelse .executable;
+            target.kind = project_mod.parseTargetType(kind) orelse return error.InvalidTargetType;
         }
         target.sources = try parseStringArray(allocator, entry.body, ".sources");
         target.include_dirs = try parseStringArray(allocator, entry.body, ".include_dirs");
@@ -237,4 +238,34 @@ fn findNextQuote(bytes: []const u8, start: usize) ?usize {
         if (bytes[i] == '"') return i;
     }
     return null;
+}
+
+test "parseBuildZon canonicalizes backend aliases" {
+    const fixture =
+        \\.{
+        \\    .name = "demo",
+        \\    .version = "1.0.0",
+        \\    .defaults = .{
+        \\        .backend = "zig-cc",
+        \\    },
+        \\}
+    ;
+
+    const parsed = try parseBuildZon(std.testing.allocator, fixture);
+    try std.testing.expectEqualStrings("zigcc", parsed.defaults.backend);
+}
+
+test "parseBuildZon rejects invalid defaults and target types" {
+    try std.testing.expectError(
+        error.InvalidCppStandard,
+        parseBuildZon(std.testing.allocator, ".{ .name = \"demo\", .version = \"1.0.0\", .defaults = .{ .cpp_standard = .cpp26 } }"),
+    );
+    try std.testing.expectError(
+        error.InvalidBackend,
+        parseBuildZon(std.testing.allocator, ".{ .name = \"demo\", .version = \"1.0.0\", .defaults = .{ .backend = \"unknown\" } }"),
+    );
+    try std.testing.expectError(
+        error.InvalidTargetType,
+        parseBuildZon(std.testing.allocator, ".{ .name = \"demo\", .version = \"1.0.0\", .targets = .{ .demo = .{ .type = .library_dynamic } } }"),
+    );
 }

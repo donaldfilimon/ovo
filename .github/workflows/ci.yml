@@ -23,19 +23,19 @@ jobs:
         version: ${{ matrix.zig-version }}
 
     - name: Verify Zig version
-      run: zig build zig-version-consistency
+      run: ./scripts/zigw build zig-version-consistency
 
     - name: Typecheck
-      run: zig build typecheck
+      run: ./scripts/zigw build typecheck
 
     - name: Unit tests
-      run: zig build unit-tests
+      run: ./scripts/zigw build unit-tests
 
     - name: CLI smoke tests
-      run: zig build cli-tests-smoke
+      run: ./scripts/zigw build cli-tests-smoke
 
     - name: CLI help matrix
-      run: zig build cli-help-matrix
+      run: ./scripts/zigw build cli-help-matrix
 
   full-check:
     runs-on: ubuntu-latest
@@ -48,4 +48,4 @@ jobs:
         version: '0.16.0-dev.2984+cb7d2b056'
 
     - name: Full check
-      run: zig build full-check
+      run: ./scripts/zigw build full-check

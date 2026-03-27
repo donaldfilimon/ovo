@@ -114,10 +114,10 @@ const result = try obj.someMethod(allocator, args);
 
 ```bash
 # Check current version
-zig version
+./scripts/zigw version
 
 # Verify consistency
-zig build zig-version-consistency
+./scripts/zigw build zig-version-consistency
 ```
 
 The build system verifies that the active Zig version matches:

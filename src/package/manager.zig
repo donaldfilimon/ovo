@@ -472,22 +472,22 @@ const GitResult = struct {
 };
 
 fn fetchGitDependency(allocator: std.mem.Allocator, dep: ResolvedDependency) !GitResult {
-    if (!exec.commandExists(allocator, "git")) return error.MissingGit;
+    if (!exec.commandExists("git")) return error.MissingGit;
 
     const tmp_key = try cacheKeyForGit(allocator, dep.url, if (dep.ref.len > 0) dep.ref else "HEAD");
     const source_dir = try std.fmt.allocPrint(allocator, "{s}/.git-{s}", .{ cache_dir, tmp_key });
     try core.fs.removeTreeIfExists(source_dir);
 
     if (dep.ref.len > 0 and !std.mem.eql(u8, dep.ref, "HEAD")) {
-        const branch_code = try exec.runQuiet(allocator, &.{ "git", "clone", "--depth", "1", "--branch", dep.ref, dep.url, source_dir });
+        const branch_code = try exec.runQuiet(&.{ "git", "clone", "--depth", "1", "--branch", dep.ref, dep.url, source_dir });
         if (branch_code != 0) {
-            const code = try exec.runQuiet(allocator, &.{ "git", "clone", "--depth", "1", dep.url, source_dir });
+            const code = try exec.runQuiet(&.{ "git", "clone", "--depth", "1", dep.url, source_dir });
             if (code != 0) return error.GitCloneFailed;
-            const checkout_code = try exec.runQuiet(allocator, &.{ "git", "-C", source_dir, "checkout", dep.ref });
+            const checkout_code = try exec.runQuiet(&.{ "git", "-C", source_dir, "checkout", dep.ref });
             if (checkout_code != 0) return error.GitCheckoutFailed;
         }
     } else {
-        const code = try exec.runQuiet(allocator, &.{ "git", "clone", "--depth", "1", dep.url, source_dir });
+        const code = try exec.runQuiet(&.{ "git", "clone", "--depth", "1", dep.url, source_dir });
         if (code != 0) return error.GitCloneFailed;
     }
 
@@ -513,10 +513,10 @@ fn fetchTarDependency(allocator: std.mem.Allocator, dep: ResolvedDependency, tar
     try verifySha256(allocator, download_path, dep.sha256);
 
     if (!std.mem.endsWith(u8, dep.url, ".zip")) {
-        const code = try exec.runQuiet(allocator, &.{ "tar", "xzf", download_path, "-C", extract_root });
+        const code = try exec.runQuiet(&.{ "tar", "xzf", download_path, "-C", extract_root });
         if (code != 0) return error.TarExtractFailed;
     } else {
-        const code = try exec.runQuiet(allocator, &.{ "unzip", "-q", download_path, "-d", extract_root });
+        const code = try exec.runQuiet(&.{ "unzip", "-q", download_path, "-d", extract_root });
         if (code != 0) return error.TarExtractFailed;
     }
 
@@ -538,7 +538,7 @@ fn installDependencyContents(allocator: std.mem.Allocator, source: []const u8, t
     try core.fs.removeTreeIfExists(target_dir);
     const copy_source = try std.fmt.allocPrint(allocator, "{s}/.", .{source});
     defer allocator.free(copy_source);
-    const code = try exec.runQuiet(allocator, &.{ "cp", "-R", copy_source, target_dir });
+    const code = try exec.runQuiet(&.{ "cp", "-R", copy_source, target_dir });
     if (code != 0) return error.DependencyCopyFailed;
 }
 

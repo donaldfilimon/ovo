@@ -1,13 +1,7 @@
 const std = @import("std");
 const runtime = @import("runtime.zig");
 
-// NOTE: allocator params are currently unused but kept for API consistency.
-// All 13+ call sites pass ctx.allocator; removing it would be a large
-// signature change with no behavioral benefit. Revisit if spawn() gains
-// allocator-based features in future Zig versions.
-
-pub fn runInherit(allocator: std.mem.Allocator, argv: []const []const u8) !u8 {
-    _ = allocator;
+pub fn runInherit(argv: []const []const u8) !u8 {
     var child = try std.process.spawn(runtime.io(), .{
         .argv = argv,
         .stdin = .inherit,
@@ -23,8 +17,7 @@ pub fn runInherit(allocator: std.mem.Allocator, argv: []const []const u8) !u8 {
     };
 }
 
-pub fn runQuiet(allocator: std.mem.Allocator, argv: []const []const u8) !u8 {
-    _ = allocator;
+pub fn runQuiet(argv: []const []const u8) !u8 {
     var child = try std.process.spawn(runtime.io(), .{
         .argv = argv,
         .stdin = .ignore,
@@ -61,9 +54,7 @@ pub fn runCapture(allocator: std.mem.Allocator, argv: []const []const u8) !Captu
     };
 }
 
-pub fn commandExists(allocator: std.mem.Allocator, command: []const u8) bool {
-    // Use 'which' to check PATH lookup — works for all commands regardless
-    // of whether they support --version
-    const code = runQuiet(allocator, &.{ "which", command }) catch return false;
+pub fn commandExists(command: []const u8) bool {
+    const code = runQuiet(&.{ "which", command }) catch return false;
     return code == 0;
 }

@@ -75,3 +75,7 @@ fn absolutePathAlloc(allocator: std.mem.Allocator, cwd: []const u8, path: []cons
     if (std.fs.path.isAbsolute(path)) return try allocator.dupe(u8, path);
     return try std.fs.path.join(allocator, &.{ cwd, path });
 }
+
+test "fs fileExists returns false for nonexistent file" {
+    try std.testing.expect(!fileExists("/nonexistent/path/that/does/not/exist_12345.zig"));
+}
