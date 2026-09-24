@@ -1,13 +1,77 @@
 name: CI
 
+# Trusted same-repo events (push, same-repo pull requests) run on the macOS
+# arm64 self-hosted runner registered to this repository with the label ovo.
+# Fork pull requests use the GitHub-hosted *-hosted jobs below: never schedule
+# untrusted code on the self-hosted machine. Until a runner with these labels
+# is online, the self-hosted jobs wait in the queue.
+# Runner setup and security model: docs/SelfHostedRunner.md
+
 on:
   push:
     branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
 
+permissions:
+  contents: read
+
 jobs:
   build:
+    if: >
+      github.repository == 'donaldfilimon/ovo' &&
+      (github.event_name == 'push' ||
+       github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: [self-hosted, macOS, ARM64, ovo]
+    timeout-minutes: 45
+    strategy:
+      matrix:
+        # Only a check-name label here: runs-on above does not read it. It keeps
+        # the macOS leg's check name, build (macos-latest, <zig>). The Linux leg
+        # cannot run on this machine; it stays in build-hosted for fork PRs.
+        os: [macos-latest]
+        zig-version: ['0.16.0-dev.2984+cb7d2b056']
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+
+    # goto-bus-stop/setup-zig@v2 requests zig-macos-aarch64-<version>, but Zig
+    # builds since 0.14.1 are named zig-aarch64-macos-<version>, and ziglang.org
+    # no longer serves this dev build under either name. mlugg/setup-zig (its
+    # recommended replacement) uses the current naming, fetches from the
+    # community mirrors that still carry the build, and checks the minisign
+    # signature. use-cache: false keeps the Zig cache off the GitHub cache
+    # service; the runner's tool cache keeps the compiler between runs.
+    - name: Setup Zig
+      uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      with:
+        version: ${{ matrix.zig-version }}
+        use-cache: false
+
+    - name: Verify Zig version
+      run: ./scripts/zigw build zig-version-consistency
+
+    - name: Typecheck
+      run: ./scripts/zigw build typecheck
+
+    - name: Unit tests
+      run: ./scripts/zigw build unit-tests
+
+    - name: CLI smoke tests
+      run: ./scripts/zigw build cli-tests-smoke
+
+    - name: CLI help matrix
+      run: ./scripts/zigw build cli-help-matrix
+
+  build-hosted:
+    name: build (GitHub-hosted, fork PRs)
+    if: >
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -38,6 +102,70 @@ jobs:
       run: ./scripts/zigw build cli-help-matrix
 
   full-check:
+    if: >
+      github.repository == 'donaldfilimon/ovo' &&
+      (github.event_name == 'push' ||
+       github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: [self-hosted, macOS, ARM64, ovo]
+    timeout-minutes: 60
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+
+    # full-check runs cli-tests-variations, which first runs
+    # scripts/check-cli-test-env.sh: it fails unless clang-format, clang-tidy,
+    # clang-doc, clang++, g++, cmake, ninja and doxygen are all on PATH. The
+    # Command Line Tools provide clang++ and g++; the rest come from Homebrew.
+    # Homebrew's llvm is keg-only, so only its three tools are linked onto PATH,
+    # not its whole bin (which would shadow Apple clang). This step runs before
+    # Setup Zig so the Zig that step adds stays first on PATH, ahead of any
+    # Homebrew zig.
+    - name: Install full-check host tools
+      env:
+        HOMEBREW_NO_AUTO_UPDATE: '1'
+        HOMEBREW_NO_INSTALL_CLEANUP: '1'
+      run: |
+        brew_bin="$(command -v brew || true)"
+        if [[ -z "$brew_bin" ]]; then
+          for candidate in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+            if [[ -x "$candidate" ]]; then brew_bin="$candidate"; break; fi
+          done
+        fi
+        if [[ -z "$brew_bin" ]]; then
+          echo "::error::Homebrew not found; see docs/SelfHostedRunner.md"
+          exit 1
+        fi
+        for formula in llvm cmake ninja doxygen; do
+          "$brew_bin" list --formula "$formula" >/dev/null 2>&1 || "$brew_bin" install "$formula"
+        done
+        tools="$RUNNER_TEMP/ovo-llvm-tools"
+        mkdir -p "$tools"
+        llvm_bin="$("$brew_bin" --prefix llvm)/bin"
+        for tool in clang-format clang-tidy clang-doc; do
+          ln -sf "$llvm_bin/$tool" "$tools/$tool"
+          "$tools/$tool" --version >/dev/null
+        done
+        echo "$("$brew_bin" --prefix)/bin" >> "$GITHUB_PATH"
+        echo "$tools" >> "$GITHUB_PATH"
+
+    # See the Setup Zig note in the build job.
+    - name: Setup Zig
+      uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      with:
+        version: '0.16.0-dev.2984+cb7d2b056'
+        use-cache: false
+
+    - name: Full check
+      run: ./scripts/zigw build full-check
+
+  full-check-hosted:
+    name: full-check (GitHub-hosted, fork PRs)
+    if: >
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4

@@ -164,9 +164,10 @@ Reference issues when applicable: `fix: resolve issue with version parsing (#123
 ## CI & Quality Gates
 
 CI runs on push/PR to `main`/`master` via `.github/workflows/ci.yml`:
-- **Build matrix:** Ubuntu and macOS with pinned Zig version (`0.16.0-dev.2984+cb7d2b056`).
+- **Build job:** macOS arm64 self-hosted runner (label `ovo`) with pinned Zig version (`0.16.0-dev.2984+cb7d2b056`); fork PRs use the GitHub-hosted Ubuntu and macOS matrix in `build-hosted`.
 - **Required checks:** version consistency, typecheck, unit tests, CLI smoke tests, help matrix.
-- **Full check job:** Runs `full-check` on Ubuntu (includes all tiers).
+- **Full check job:** Runs `full-check` (includes all tiers) on the same self-hosted runner; fork PRs use `full-check-hosted` on Ubuntu.
+- **Runner setup:** see `docs/SelfHostedRunner.md`.
 - **Merge requirements:** All required checks must pass before merging.
 
 ## Debugging & Troubleshooting

@@ -141,6 +141,7 @@ See `AGENTS.md` for detailed workflow orchestration guidelines.
 - `docs/testing-matrix.md`
 - `docs/workflow-orchestration.md`
 - `docs/zig-0-16-migration.md`
+- `docs/SelfHostedRunner.md`
 
 ## Platform Support
 
